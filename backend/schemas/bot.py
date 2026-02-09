@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import List, Literal
+from sqlalchemy.orm import relationship
 
 
 class BotAddRequest(BaseModel):
@@ -22,4 +23,8 @@ class BotRoleUpdateRequest(BaseModel):
 
 
 class BotStatusUpdate(BaseModel):
-    status: Literal["alive", "dead"]
+    status: Literal["alive", "degraded", "dead"]
+
+
+class BotApplyConfigRequest(BaseModel):
+    region: str

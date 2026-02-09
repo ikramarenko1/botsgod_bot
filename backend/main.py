@@ -1,12 +1,15 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from datetime import datetime
 import httpx
 from typing import List
 
 from backend.db.session import get_db
 from backend.models.bot import Bot, BotRole, BotStatus
-from backend.schemas.bot import BotAddRequest, BotResponse, BotRoleUpdateRequest, BotStatusUpdate
+from backend.schemas.bot import BotAddRequest, BotResponse, BotRoleUpdateRequest, BotStatusUpdate, BotApplyConfigRequest
+from backend.models.bot_config import BotConfig
+from backend.schemas.bot_config import BotConfigCreate, BotConfigResponse
 
 app = FastAPI(title="StageControl Backend")
 
@@ -30,6 +33,17 @@ async def list_bots(db: AsyncSession = Depends(get_db)):
         )
         for b in bots
     ]
+
+
+@app.get("/bots/{bot_id}/configs", response_model=list[BotConfigResponse])
+async def list_bot_configs(
+    bot_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(BotConfig).where(BotConfig.bot_id == bot_id)
+    )
+    return result.scalars().all()
 
 
 # ===== POST =====
@@ -196,6 +210,107 @@ async def replacement(db: AsyncSession = Depends(get_db)):
 
     return {
         "replacements": replaced
+    }
+
+
+@app.post("/bots/{bot_id}/configs", response_model=BotConfigResponse)
+async def upsert_bot_config(
+    bot_id: int,
+    data: BotConfigCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    result = await db.execute(
+        select(BotConfig).where(
+            BotConfig.bot_id == bot_id,
+            BotConfig.region == data.region,
+        )
+    )
+    config = result.scalar_one_or_none()
+
+    if config:
+        config.name = data.name
+        config.description = data.description
+    else:
+        config = BotConfig(
+            bot_id=bot_id,
+            region=data.region,
+            name=data.name,
+            description=data.description,
+        )
+        db.add(config)
+
+    await db.commit()
+    await db.refresh(config)
+    return config
+
+
+@app.post("/bots/{bot_id}/configs/apply")
+async def apply_bot_config(
+    bot_id: int,
+    data: BotApplyConfigRequest,
+    db: AsyncSession = Depends(get_db),
+):
+
+    result = await db.execute(select(Bot).where(Bot.id == bot_id))
+    bot = result.scalar_one_or_none()
+
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    result = await db.execute(
+        select(BotConfig).where(
+            BotConfig.bot_id == bot_id,
+            BotConfig.region == data.region,
+        )
+    )
+    config = result.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Config for region '{data.region}' not found",
+        )
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        # setMyName
+        resp_name = await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setMyName",
+            json={"name": config.name},
+        )
+
+        if resp_name.status_code != 200 or not resp_name.json().get("ok"):
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to set bot name in Telegram",
+            )
+
+        # setMyDescription
+        resp_desc = await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setMyDescription",
+            json={"description": config.description},
+        )
+
+        if resp_desc.status_code != 200 or not resp_desc.json().get("ok"):
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to set bot description in Telegram",
+            )
+
+    bot.last_applied_region = data.region
+    bot.last_applied_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(bot)
+
+    return {
+        "bot_id": bot.id,
+        "username": bot.username,
+        "applied_region": data.region,
+        "applied_at": bot.last_applied_at,
     }
 
 

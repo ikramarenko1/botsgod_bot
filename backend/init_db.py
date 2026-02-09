@@ -2,7 +2,9 @@ import asyncio
 
 from backend.db.session import engine
 from backend.db.base import Base
+
 from backend.models.bot import Bot
+from backend.models.bot_config import BotConfig
 
 
 async def init():

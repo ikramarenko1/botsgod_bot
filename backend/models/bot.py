@@ -1,5 +1,7 @@
+from typing import Optional
+
 from sqlalchemy import String, DateTime, Enum
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import enum
 
@@ -27,3 +29,11 @@ class Bot(Base):
     role: Mapped[BotRole] = mapped_column(Enum(BotRole), default=BotRole.reserve)
     status: Mapped[BotStatus] = mapped_column(Enum(BotStatus), default=BotStatus.alive)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_applied_region: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    last_applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    configs = relationship(
+        "BotConfig",
+        back_populates="bot",
+        cascade="all, delete-orphan",
+    )

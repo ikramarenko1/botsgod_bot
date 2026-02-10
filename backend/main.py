@@ -6,10 +6,15 @@ import httpx
 from typing import List
 
 from backend.db.session import get_db
+
 from backend.models.bot import Bot, BotRole, BotStatus
 from backend.schemas.bot import BotAddRequest, BotResponse, BotRoleUpdateRequest, BotStatusUpdate, BotApplyConfigRequest
+
 from backend.models.bot_config import BotConfig
 from backend.schemas.bot_config import BotConfigCreate, BotConfigResponse
+
+from backend.models.broadcast import Broadcast, BroadcastStatus
+from backend.schemas.broadcast import BroadcastResponse, BroadcastCreateRequest
 
 app = FastAPI(title="StageControl Backend")
 
@@ -44,6 +49,32 @@ async def list_bot_configs(
         select(BotConfig).where(BotConfig.bot_id == bot_id)
     )
     return result.scalars().all()
+
+
+@app.get(
+    "/bots/{bot_id}/broadcasts",
+    response_model=list[BroadcastResponse],
+)
+async def list_broadcasts(
+    bot_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Broadcast).where(Broadcast.bot_id == bot_id)
+    )
+    broadcasts = result.scalars().all()
+
+    return [
+        BroadcastResponse(
+            id=b.id,
+            bot_id=b.bot_id,
+            region=b.region,
+            text=b.text,
+            buttons=b.buttons,
+            status=b.status.value,
+        )
+        for b in broadcasts
+    ]
 
 
 # ===== POST =====
@@ -312,6 +343,44 @@ async def apply_bot_config(
         "applied_region": data.region,
         "applied_at": bot.last_applied_at,
     }
+
+
+@app.post(
+    "/bots/{bot_id}/broadcasts",
+    response_model=BroadcastResponse,
+)
+async def create_broadcast(
+    bot_id: int,
+    data: BroadcastCreateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Bot).where(Bot.id == bot_id)
+    )
+    bot = result.scalar_one_or_none()
+
+    if not bot:
+        raise HTTPException(404, "Bot not found")
+
+    broadcast = Broadcast(
+        bot_id=bot_id,
+        region=data.region,
+        text=data.text,
+        buttons=data.buttons,
+    )
+
+    db.add(broadcast)
+    await db.commit()
+    await db.refresh(broadcast)
+
+    return BroadcastResponse(
+        id=broadcast.id,
+        bot_id=broadcast.bot_id,
+        region=broadcast.region,
+        text=broadcast.text,
+        buttons=broadcast.buttons,
+        status=broadcast.status.value,
+    )
 
 
 # ===== PATCH =====

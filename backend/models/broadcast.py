@@ -21,6 +21,7 @@ class BroadcastStatus(enum.Enum):
     sending = "sending"
     sent = "sent"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class Broadcast(Base):
@@ -41,7 +42,6 @@ class Broadcast(Base):
     status: Mapped[BroadcastStatus] = mapped_column(
         Enum(BroadcastStatus),
         default=BroadcastStatus.draft,
-        index=True,
     )
 
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(

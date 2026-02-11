@@ -14,7 +14,9 @@ from backend.models.bot_config import BotConfig
 from backend.schemas.bot_config import BotConfigCreate, BotConfigResponse
 
 from backend.models.broadcast import Broadcast, BroadcastStatus
-from backend.schemas.broadcast import BroadcastResponse, BroadcastCreateRequest
+from backend.schemas.broadcast import BroadcastResponse, BroadcastCreateRequest, BroadcastStatusUpdate
+
+from backend.models.user import BotUser
 
 app = FastAPI(title="StageControl Backend")
 
@@ -74,6 +76,44 @@ async def list_broadcasts(
             status=b.status.value,
         )
         for b in broadcasts
+    ]
+
+
+@app.get("/bots/{bot_id}/users")
+async def list_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(BotUser).where(BotUser.bot_id == bot_id, BotUser.is_active == True)
+    )
+    users = result.scalars().all()
+
+    return [
+        {
+            "id": u.id,
+            "telegram_id": u.telegram_id,
+        }
+        for u in users
+    ]
+
+
+@app.get("/broadcasts/scheduled")
+async def get_scheduled(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Broadcast, Bot)
+        .join(Bot, Broadcast.bot_id == Bot.id)
+        .where(Broadcast.status == BroadcastStatus.scheduled)
+    )
+
+    rows = result.all()
+
+    return [
+        {
+            "id": broadcast.id,
+            "bot_id": broadcast.bot_id,
+            "text": broadcast.text,
+            "buttons": broadcast.buttons,
+            "token": bot.token,
+        }
+        for broadcast, bot in rows
     ]
 
 
@@ -383,6 +423,51 @@ async def create_broadcast(
     )
 
 
+@app.post("/webhooks/{bot_id}")
+async def telegram_webhook(
+    bot_id: int,
+    update: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    message = update.get("message") or update.get("callback_query", {}).get("message")
+
+    if not message:
+        return {"status": "ignored"}
+
+    user_data = message.get("from")
+    if not user_data:
+        return {"status": "no_user"}
+
+    telegram_id = user_data["id"]
+
+    # проверяю, есть ли уже такой пользователь
+    result = await db.execute(
+        select(BotUser).where(
+            BotUser.bot_id == bot_id,
+            BotUser.telegram_id == telegram_id,
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        user = BotUser(
+            bot_id=bot_id,
+            telegram_id=telegram_id,
+            username=user_data.get("username"),
+            first_name=user_data.get("first_name"),
+            last_name=user_data.get("last_name"),
+            created_at=datetime.utcnow(),
+            last_seen_at=datetime.utcnow(),
+        )
+        db.add(user)
+    else:
+        user.last_seen_at = datetime.utcnow()
+
+    await db.commit()
+
+    return {"status": "ok"}
+
+
 # ===== PATCH =====
 @app.patch("/bots/{bot_id}/role", response_model=BotResponse)
 async def update_bot_role(
@@ -433,3 +518,46 @@ async def update_bot_status(
         role=bot.role.value,
         status=bot.status.value,
     )
+
+
+@app.patch("/broadcasts/{broadcast_id}/status")
+async def update_broadcast_status(
+    broadcast_id: int,
+    data: BroadcastStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Broadcast).where(Broadcast.id == broadcast_id)
+    )
+    broadcast = result.scalar_one_or_none()
+
+    if not broadcast:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    current = broadcast.status.value
+    new = data.status
+
+    allowed_transitions = {
+        "draft": ["scheduled", "cancelled"],
+        "scheduled": ["sending", "cancelled"],
+        "sending": ["sent", "failed"],
+        "failed": ["scheduled"],
+        "sent": [],
+        "cancelled": [],
+    }
+
+    if new not in allowed_transitions[current]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot change status from {current} to {new}",
+        )
+
+    broadcast.status = BroadcastStatus(new)
+
+    await db.commit()
+    await db.refresh(broadcast)
+
+    return {
+        "id": broadcast.id,
+        "status": broadcast.status.value,
+    }

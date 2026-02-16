@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime
+from sqlalchemy import select, and_, or_, func
+from datetime import datetime, timedelta
 import httpx
 from typing import List
 
@@ -14,7 +14,13 @@ from backend.models.bot_config import BotConfig
 from backend.schemas.bot_config import BotConfigCreate, BotConfigResponse
 
 from backend.models.broadcast import Broadcast, BroadcastStatus
-from backend.schemas.broadcast import BroadcastResponse, BroadcastCreateRequest, BroadcastStatusUpdate
+from backend.schemas.broadcast import BroadcastResponse, BroadcastCreateRequest, BroadcastStatusUpdate, BroadcastScheduleUpdate
+
+from backend.models.bot_welcome import BotWelcome
+from backend.schemas.bot_welcome import WelcomeCreateRequest, WelcomeResponse
+
+from backend.models.delayed_message import DelayedMessage, DelayedStatus
+from backend.schemas.delayed_message import DelayedConfigRequest
 
 from backend.models.user import BotUser
 
@@ -74,6 +80,13 @@ async def list_broadcasts(
             text=b.text,
             buttons=b.buttons,
             status=b.status.value,
+
+            total_users=b.total_users,
+            sent_count=b.sent_count,
+            failed_count=b.failed_count,
+            started_at=b.started_at,
+            finished_at=b.finished_at,
+            scheduled_at=b.scheduled_at,
         )
         for b in broadcasts
     ]
@@ -97,10 +110,18 @@ async def list_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
 
 @app.get("/broadcasts/scheduled")
 async def get_scheduled(db: AsyncSession = Depends(get_db)):
+    now = datetime.utcnow()
+
     result = await db.execute(
         select(Broadcast, Bot)
         .join(Bot, Broadcast.bot_id == Bot.id)
-        .where(Broadcast.status == BroadcastStatus.scheduled)
+        .where(
+            Broadcast.status == BroadcastStatus.scheduled,
+            or_(
+                Broadcast.scheduled_at == None,
+                Broadcast.scheduled_at <= now
+            )
+        )
     )
 
     rows = result.all()
@@ -114,6 +135,119 @@ async def get_scheduled(db: AsyncSession = Depends(get_db)):
             "token": bot.token,
         }
         for broadcast, bot in rows
+    ]
+
+
+@app.get("/bots/{bot_id}/stats")
+async def bot_stats(
+    bot_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    now = datetime.utcnow()
+    last_24h = now - timedelta(hours=24)
+
+    # === USERS ===
+    total_users_result = await db.execute(
+        select(func.count()).select_from(BotUser)
+        .where(BotUser.bot_id == bot_id)
+    )
+    total_users = total_users_result.scalar() or 0
+
+    active_users_result = await db.execute(
+        select(func.count()).select_from(BotUser)
+        .where(
+            BotUser.bot_id == bot_id,
+            BotUser.last_seen_at >= last_24h,
+        )
+    )
+    active_last_24h = active_users_result.scalar() or 0
+
+    # === BROADCASTS ===
+    total_broadcasts_result = await db.execute(
+        select(func.count()).select_from(Broadcast)
+        .where(Broadcast.bot_id == bot_id)
+    )
+    total_broadcasts = total_broadcasts_result.scalar() or 0
+
+    sent_result = await db.execute(
+        select(func.count()).select_from(Broadcast)
+        .where(
+            Broadcast.bot_id == bot_id,
+            Broadcast.status == BroadcastStatus.sent,
+        )
+    )
+    sent_broadcasts = sent_result.scalar() or 0
+
+    failed_result = await db.execute(
+        select(func.count()).select_from(Broadcast)
+        .where(
+            Broadcast.bot_id == bot_id,
+            Broadcast.status == BroadcastStatus.failed,
+        )
+    )
+    failed_broadcasts = failed_result.scalar() or 0
+
+    draft_result = await db.execute(
+        select(func.count()).select_from(Broadcast)
+        .where(
+            Broadcast.bot_id == bot_id,
+            Broadcast.status == BroadcastStatus.draft,
+        )
+    )
+    draft_broadcasts = draft_result.scalar() or 0
+
+    return {
+        "total_users": total_users,
+        "active_last_24h": active_last_24h,
+        "total_broadcasts": total_broadcasts,
+        "sent_broadcasts": sent_broadcasts,
+        "failed_broadcasts": failed_broadcasts,
+        "draft_broadcasts": draft_broadcasts,
+    }
+
+
+@app.get("/bots/{bot_id}/welcome", response_model=WelcomeResponse)
+async def get_welcome(bot_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(BotWelcome).where(BotWelcome.bot_id == bot_id)
+    )
+    welcome = result.scalar_one_or_none()
+
+    if not welcome:
+        raise HTTPException(404, "Welcome message not set")
+
+    return welcome
+
+
+@app.get("/delayed/pending")
+async def get_pending_delayed(db: AsyncSession = Depends(get_db)):
+    now = datetime.utcnow()
+
+    result = await db.execute(
+        select(DelayedMessage, Bot, BotUser)
+        .join(Bot, DelayedMessage.bot_id == Bot.id)
+        .join(BotUser, DelayedMessage.user_id == BotUser.id)
+        .where(
+            DelayedMessage.status == DelayedStatus.pending,
+            DelayedMessage.send_at <= now,
+        )
+    )
+
+    rows = result.all()
+
+    return [
+        {
+            "id": msg.id,
+            "telegram_id": user.telegram_id,
+            "text": msg.text,
+            "buttons": msg.buttons,
+            "token": bot.token,
+        }
+        for msg, bot, user in rows
     ]
 
 
@@ -407,6 +541,7 @@ async def create_broadcast(
         region=data.region,
         text=data.text,
         buttons=data.buttons,
+        scheduled_at=data.scheduled_at,
     )
 
     db.add(broadcast)
@@ -465,7 +600,122 @@ async def telegram_webhook(
 
     await db.commit()
 
+    bot = await db.get(Bot, bot_id)
+
+    # если это /start - отправляю welcome message
+    if message.get("text") == "/start":
+        if bot.delayed_text and bot.delayed_delay_minutes:
+            existing_delayed = await db.execute(
+                select(DelayedMessage).where(
+                    DelayedMessage.bot_id == bot_id,
+                    DelayedMessage.user_id == user.id,
+                    DelayedMessage.status == DelayedStatus.pending,
+                )
+            )
+
+            if not existing_delayed.scalar_one_or_none():
+                send_time = datetime.utcnow() + timedelta(
+                    minutes=bot.delayed_delay_minutes
+                )
+
+                delayed = DelayedMessage(
+                    bot_id=bot_id,
+                    user_id=user.id,
+                    text=bot.delayed_text,
+                    buttons=bot.delayed_buttons,
+                    send_at=send_time,
+                )
+
+                db.add(delayed)
+                await db.commit()
+
+        result = await db.execute(
+            select(BotWelcome).where(
+                BotWelcome.bot_id == bot_id,
+                BotWelcome.is_enabled == True,
+            )
+        )
+        welcome = result.scalar_one_or_none()
+
+        if welcome:
+            payload = {
+                "chat_id": telegram_id,
+            }
+
+            if welcome.photo_file_id:
+                payload["photo"] = welcome.photo_file_id
+                payload["caption"] = welcome.text
+                method = "sendPhoto"
+            else:
+                payload["text"] = welcome.text
+                method = "sendMessage"
+
+            if welcome.buttons:
+                payload["reply_markup"] = {
+                    "inline_keyboard": [
+                        [{"text": b["text"], "url": b["url"]}]
+                        for b in welcome.buttons
+                    ]
+                }
+
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{bot.token}/{method}",
+                    json=payload,
+                )
+
     return {"status": "ok"}
+
+
+@app.post("/bots/{bot_id}/welcome", response_model=WelcomeResponse)
+async def upsert_welcome(
+    bot_id: int,
+    data: WelcomeCreateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(BotWelcome).where(BotWelcome.bot_id == bot_id)
+    )
+    welcome = result.scalar_one_or_none()
+
+    if welcome:
+        welcome.text = data.text
+        welcome.photo_file_id = data.photo_file_id
+        welcome.buttons = data.buttons
+        welcome.is_enabled = data.is_enabled
+    else:
+        welcome = BotWelcome(
+            bot_id=bot_id,
+            text=data.text,
+            photo_file_id=data.photo_file_id,
+            buttons=data.buttons,
+            is_enabled=data.is_enabled,
+        )
+        db.add(welcome)
+
+    await db.commit()
+    await db.refresh(welcome)
+
+    return welcome
+
+
+@app.post("/bots/{bot_id}/delayed")
+async def set_delayed_message(
+    bot_id: int,
+    data: DelayedConfigRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(404, "Bot not found")
+
+    bot.delayed_text = data.text
+    bot.delayed_buttons = data.buttons
+    bot.delayed_delay_minutes = data.delay_minutes
+
+    await db.commit()
+
+    return {"status": "configured"}
 
 
 # ===== PATCH =====
@@ -561,3 +811,93 @@ async def update_broadcast_status(
         "id": broadcast.id,
         "status": broadcast.status.value,
     }
+
+
+@app.patch("/broadcasts/{broadcast_id}/stats")
+async def update_broadcast_stats(
+    broadcast_id: int,
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Broadcast).where(Broadcast.id == broadcast_id)
+    )
+    broadcast = result.scalar_one_or_none()
+
+    if not broadcast:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    if "total_users" in data:
+        broadcast.total_users = data["total_users"]
+
+    if "sent_count" in data:
+        broadcast.sent_count = data["sent_count"]
+
+    if "failed_count" in data:
+        broadcast.failed_count = data["failed_count"]
+
+    if "started_at" in data:
+        broadcast.started_at = datetime.utcnow()
+
+    if "finished_at" in data:
+        broadcast.finished_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(broadcast)
+
+    return {"status": "ok"}
+
+
+@app.patch("/broadcasts/{broadcast_id}/schedule")
+async def update_broadcast_schedule(
+    broadcast_id: int,
+    data: BroadcastScheduleUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Broadcast).where(Broadcast.id == broadcast_id)
+    )
+    broadcast = result.scalar_one_or_none()
+
+    if not broadcast:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    if broadcast.status not in (
+        BroadcastStatus.draft,
+        BroadcastStatus.scheduled,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Can edit schedule only for draft or scheduled broadcasts",
+        )
+
+    broadcast.scheduled_at = data.scheduled_at
+
+    # если было draft → автоматически делаю scheduled
+    if broadcast.status == BroadcastStatus.draft:
+        broadcast.status = BroadcastStatus.scheduled
+
+    await db.commit()
+    await db.refresh(broadcast)
+
+    return {
+        "id": broadcast.id,
+        "status": broadcast.status.value,
+        "scheduled_at": broadcast.scheduled_at,
+    }
+
+
+@app.patch("/delayed/{msg_id}/sent")
+async def mark_delayed_sent(msg_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(DelayedMessage).where(DelayedMessage.id == msg_id)
+    )
+    msg = result.scalar_one_or_none()
+
+    if not msg:
+        raise HTTPException(404, "Delayed message not found")
+
+    msg.status = DelayedStatus.sent
+    await db.commit()
+
+    return {"status": "ok"}

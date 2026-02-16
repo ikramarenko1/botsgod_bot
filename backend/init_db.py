@@ -7,6 +7,8 @@ from backend.models.bot import Bot
 from backend.models.bot_config import BotConfig
 from backend.models.broadcast import Broadcast
 from backend.models.user import BotUser
+from backend.models.bot_welcome import BotWelcome
+from backend.models.delayed_message import DelayedMessage
 
 
 async def init():

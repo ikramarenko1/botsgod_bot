@@ -1,7 +1,8 @@
-from typing import Optional
+from typing import Optional, Text
 
 from sqlalchemy import String, DateTime, Enum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import JSON
 from datetime import datetime
 import enum
 
@@ -31,6 +32,9 @@ class Bot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_applied_region: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     last_applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    delayed_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    delayed_buttons: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    delayed_delay_minutes: Mapped[Optional[int]] = mapped_column(nullable=True)
 
     configs = relationship(
         "BotConfig",

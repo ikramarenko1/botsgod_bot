@@ -1,8 +1,11 @@
+import httpx
+import io
+import csv
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
 from datetime import datetime, timedelta
-import httpx
 from typing import List
 
 from backend.db.session import get_db
@@ -94,6 +97,10 @@ async def list_broadcasts(
 
 @app.get("/bots/{bot_id}/users")
 async def list_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
     result = await db.execute(
         select(BotUser).where(BotUser.bot_id == bot_id, BotUser.is_active == True)
     )
@@ -108,6 +115,56 @@ async def list_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
     ]
 
 
+@app.get("/bots/{bot_id}/users/export")
+async def export_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    result = await db.execute(
+        select(BotUser).where(
+            BotUser.bot_id == bot_id,
+            BotUser.is_active == True,
+        )
+    )
+    users = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # header
+    writer.writerow([
+        "id",
+        "telegram_id",
+        "username",
+        "first_name",
+        "last_name",
+        "created_at",
+        "last_seen_at",
+    ])
+
+    for u in users:
+        writer.writerow([
+            u.id,
+            u.telegram_id,
+            u.username,
+            u.first_name,
+            u.last_name,
+            u.created_at,
+            u.last_seen_at,
+        ])
+
+    output.seek(0)
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=bot_{bot_id}_users.csv"
+        },
+    )
+
+
 @app.get("/broadcasts/scheduled")
 async def get_scheduled(db: AsyncSession = Depends(get_db)):
     now = datetime.utcnow()
@@ -117,6 +174,7 @@ async def get_scheduled(db: AsyncSession = Depends(get_db)):
         .join(Bot, Broadcast.bot_id == Bot.id)
         .where(
             Broadcast.status == BroadcastStatus.scheduled,
+            Bot.role == BotRole.active,
             or_(
                 Broadcast.scheduled_at == None,
                 Broadcast.scheduled_at <= now
@@ -232,6 +290,7 @@ async def get_pending_delayed(db: AsyncSession = Depends(get_db)):
         .join(Bot, DelayedMessage.bot_id == Bot.id)
         .join(BotUser, DelayedMessage.user_id == BotUser.id)
         .where(
+            Bot.role == BotRole.active,
             DelayedMessage.status == DelayedStatus.pending,
             DelayedMessage.send_at <= now,
         )
@@ -536,6 +595,9 @@ async def create_broadcast(
     if not bot:
         raise HTTPException(404, "Bot not found")
 
+    if bot.role == BotRole.disabled:
+        raise HTTPException(400, "Bot is disabled")
+
     broadcast = Broadcast(
         bot_id=bot_id,
         region=data.region,
@@ -601,6 +663,12 @@ async def telegram_webhook(
     await db.commit()
 
     bot = await db.get(Bot, bot_id)
+
+    if not bot:
+        return {"status": "bot_not_found"}
+
+    if bot.role == BotRole.disabled:
+        return {"status": "bot_disabled"}
 
     # если это /start - отправляю welcome message
     if message.get("text") == "/start":
@@ -707,7 +775,7 @@ async def set_delayed_message(
 ):
     bot = await db.get(Bot, bot_id)
     if not bot:
-        raise HTTPException(404, "Bot not found")
+        raise HTTPException(status_code=404, detail="Bot not found")
 
     bot.delayed_text = data.text
     bot.delayed_buttons = data.buttons
@@ -716,6 +784,42 @@ async def set_delayed_message(
     await db.commit()
 
     return {"status": "configured"}
+
+
+@app.post("/broadcasts/{broadcast_id}/send-now")
+async def send_broadcast_now(
+    broadcast_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Broadcast).where(Broadcast.id == broadcast_id)
+    )
+    broadcast = result.scalar_one_or_none()
+
+    if not broadcast:
+        raise HTTPException(404, "Broadcast not found")
+
+    # можно отправлять только draft или failed
+    if broadcast.status not in (
+        BroadcastStatus.draft,
+        BroadcastStatus.failed,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot send broadcast with status {broadcast.status.value}",
+        )
+
+    broadcast.scheduled_at = datetime.utcnow()
+    broadcast.status = BroadcastStatus.scheduled
+
+    await db.commit()
+    await db.refresh(broadcast)
+
+    return {
+        "id": broadcast.id,
+        "status": broadcast.status.value,
+        "scheduled_at": broadcast.scheduled_at,
+    }
 
 
 # ===== PATCH =====
@@ -901,3 +1005,25 @@ async def mark_delayed_sent(msg_id: int, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     return {"status": "ok"}
+
+
+# ===== DELETE =====
+@app.delete("/bots/{bot_id}")
+async def delete_bot(bot_id: int, db: AsyncSession = Depends(get_db)):
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    # удаляю webhook в Telegram (чтобы не долбился в сервер)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{bot.token}/deleteWebhook"
+            )
+    except Exception:
+        pass  # если не удалось - всё равно удаляю
+
+    await db.delete(bot)
+    await db.commit()
+
+    return {"status": "deleted"}

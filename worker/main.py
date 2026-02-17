@@ -34,7 +34,7 @@ async def call_replacement(client: httpx.AsyncClient):
 
 
 async def process_broadcast(client, broadcast):
-    print(f"[worker] attempting to lock broadcast {broadcast['id']}")
+    print(f"[worker] attempting to lock broadcast id:{broadcast['id']}")
 
     try:
         r = await client.patch(
@@ -47,6 +47,11 @@ async def process_broadcast(client, broadcast):
         return
 
     print(f"[worker] processing broadcast id:{broadcast['id']}")
+
+    await client.patch(
+        f"{BACKEND_URL}/broadcasts/{broadcast['id']}/stats",
+        json={"started_at": True},
+    )
 
     total = 0
     sent = 0
@@ -91,14 +96,18 @@ async def process_broadcast(client, broadcast):
             failed += 1
 
     await client.patch(
-        f"{BACKEND_URL}/broadcasts/{broadcast['id']}/status",
+        f"{BACKEND_URL}/broadcasts/{broadcast['id']}/stats",
         json={
             "total_users": total,
             "sent_count": sent,
             "failed_count": failed,
-            "started_at": True,
             "finished_at": True,
         }
+    )
+
+    await client.patch(
+        f"{BACKEND_URL}/broadcasts/{broadcast['id']}/status",
+        json={"status": "sent"},
     )
 
     print(f"[worker] broadcast id:{broadcast['id']} sent")
@@ -106,7 +115,7 @@ async def process_broadcast(client, broadcast):
 
 
 async def process_delayed(client, msg):
-    print(f"[worker] sending delayed {msg['id']}")
+    print(f"[worker] sending delayed id:{msg['id']}")
 
     payload = {
         "chat_id": msg["telegram_id"],

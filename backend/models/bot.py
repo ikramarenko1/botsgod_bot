@@ -1,8 +1,7 @@
-from typing import Optional, Text
+from typing import Optional
 
-from sqlalchemy import String, DateTime, Enum
+from sqlalchemy import String, DateTime, Enum, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import JSON
 from datetime import datetime
 import enum
 

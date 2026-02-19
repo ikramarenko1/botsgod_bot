@@ -1,12 +1,14 @@
 import httpx
 import io
 import csv
+import os
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, and_, or_, func, update
 from datetime import datetime, timedelta
 from typing import List
+from dotenv import load_dotenv
 
 from backend.db.session import get_db
 
@@ -26,6 +28,89 @@ from backend.models.delayed_message import DelayedMessage, DelayedStatus
 from backend.schemas.delayed_message import DelayedConfigRequest
 
 from backend.models.user import BotUser
+
+
+load_dotenv()
+PUBLIC_WEBHOOK_BASE = os.getenv("PUBLIC_WEBHOOK_BASE")
+NOTIFY_BOT_TOKEN = os.getenv("NOTIFY_BOT_TOKEN")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+
+CONTROLLER_BOT_TOKEN = os.getenv("CONTROLLER_BOT_TOKEN")
+CONTROLLER_ALLOWED_USERS = os.getenv("CONTROLLER_ALLOWED_USERS", "")
+CONTROLLER_ALLOWED_USERS = [
+    int(x.strip()) for x in CONTROLLER_ALLOWED_USERS.split(",") if x.strip()
+]
+
+
+async def notify_admin(text: str):
+    if not NOTIFY_BOT_TOKEN:
+        return
+
+    async with httpx.AsyncClient(timeout=10) as client:
+
+        # отправка в группу (если указана)
+        if ADMIN_CHAT_ID:
+            try:
+                await client.post(
+                    f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": int(ADMIN_CHAT_ID),
+                        "text": text,
+                    },
+                )
+            except Exception:
+                pass
+
+        # отправка в лс всем разрешённым админам
+        for user_id in CONTROLLER_ALLOWED_USERS:
+            try:
+                await client.post(
+                    f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": user_id,
+                        "text": text,
+                    },
+                )
+            except Exception:
+                pass
+
+
+async def set_webhook(bot: Bot):
+    if not PUBLIC_WEBHOOK_BASE:
+        return
+
+    url = f"{PUBLIC_WEBHOOK_BASE}/webhooks/{bot.id}"
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setWebhook",
+            json={"url": url},
+        )
+
+
+async def apply_last_config(db: AsyncSession, bot: Bot, region: str):
+    result = await db.execute(
+        select(BotConfig).where(
+            BotConfig.bot_id == bot.id,
+            BotConfig.region == region,
+        )
+    )
+    config = result.scalar_one_or_none()
+
+    if not config:
+        return
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setMyName",
+            json={"name": config.name},
+        )
+
+        await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setMyDescription",
+            json={"description": config.description},
+        )
+
 
 app = FastAPI(title="StageControl Backend")
 
@@ -98,8 +183,8 @@ async def list_broadcasts(
 @app.get("/bots/{bot_id}/users")
 async def list_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
     bot = await db.get(Bot, bot_id)
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot or bot.role != BotRole.active:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     result = await db.execute(
         select(BotUser).where(BotUser.bot_id == bot_id, BotUser.is_active == True)
@@ -118,8 +203,8 @@ async def list_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
 @app.get("/bots/{bot_id}/users/export")
 async def export_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
     bot = await db.get(Bot, bot_id)
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     result = await db.execute(
         select(BotUser).where(
@@ -175,6 +260,7 @@ async def get_scheduled(db: AsyncSession = Depends(get_db)):
         .where(
             Broadcast.status == BroadcastStatus.scheduled,
             Bot.role == BotRole.active,
+            Bot.status == BotStatus.alive,
             or_(
                 Broadcast.scheduled_at == None,
                 Broadcast.scheduled_at <= now
@@ -202,8 +288,8 @@ async def bot_stats(
     db: AsyncSession = Depends(get_db),
 ):
     bot = await db.get(Bot, bot_id)
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot or bot.role != BotRole.active:
+        raise HTTPException(status_code=404, detail="Bot not found or not active")
 
     now = datetime.utcnow()
     last_24h = now - timedelta(hours=24)
@@ -291,6 +377,7 @@ async def get_pending_delayed(db: AsyncSession = Depends(get_db)):
         .join(BotUser, DelayedMessage.user_id == BotUser.id)
         .where(
             Bot.role == BotRole.active,
+            Bot.status == BotStatus.alive,
             DelayedMessage.status == DelayedStatus.pending,
             DelayedMessage.send_at <= now,
         )
@@ -349,6 +436,30 @@ async def add_bot(
     await db.commit()
     await db.refresh(bot)
 
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+
+            desc_resp = await client.get(
+                f"https://api.telegram.org/bot{bot.token}/getMyDescription"
+            )
+
+            description = ""
+            if desc_resp.status_code == 200 and desc_resp.json().get("ok"):
+                description = desc_resp.json()["result"].get("description", "")
+
+        default_config = BotConfig(
+            bot_id=bot.id,
+            region="default",
+            name=username,
+            description=description,
+        )
+
+        db.add(default_config)
+        await db.commit()
+
+    except Exception:
+        pass
+
     return BotResponse(
         id=bot.id,
         username=bot.username,
@@ -365,8 +476,8 @@ async def health_check_bot(
     result = await db.execute(select(Bot).where(Bot.id == bot_id))
     bot = result.scalar_one_or_none()
 
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -430,50 +541,85 @@ async def health_check_all(db: AsyncSession = Depends(get_db)):
 
 @app.post("/bots/replacement")
 async def replacement(db: AsyncSession = Depends(get_db)):
-    # ищу мертвых active
+
+    # 1. dead active
     result = await db.execute(
         select(Bot).where(
             Bot.role == BotRole.active,
             Bot.status == BotStatus.dead,
         )
     )
-    dead_actives = result.scalars().all()
+    dead_bot = result.scalars().first()
 
-    if not dead_actives:
+    if not dead_bot:
         return {"message": "No dead active bots"}
 
-    replaced = []
-
-    for dead_bot in dead_actives:
-        # ищу живого reserve
-        reserve_result = await db.execute(
-            select(Bot).where(
-                Bot.role == BotRole.reserve,
-                Bot.status == BotStatus.alive,
-            )
+    # 2. reserve alive
+    reserve_result = await db.execute(
+        select(Bot).where(
+            Bot.role == BotRole.reserve,
+            Bot.status == BotStatus.alive,
         )
-        reserve_bot = reserve_result.scalars().first()
+    )
+    reserve_bot = reserve_result.scalars().first()
 
-        if not reserve_bot:
-            replaced.append({
-                "dead_bot": dead_bot.username,
-                "status": "no_reserve_available",
-            })
-            continue
+    if not reserve_bot:
+        await notify_admin(
+            f"❗ Ошибка замены бота.\nУмерший активный: @{dead_bot.username}\nНет доступных резервных ботов."
+        )
+        return {"message": "No reserve available"}
 
-        # меняю роли
-        dead_bot.role = BotRole.disabled
-        reserve_bot.role = BotRole.active
+    if dead_bot.id == reserve_bot.id:
+        return {"message": "Invalid replacement state"}
 
-        replaced.append({
-            "dead_bot": dead_bot.username,
-            "new_active": reserve_bot.username,
-        })
+    old_id = dead_bot.id
+    new_id = reserve_bot.id
+
+    # перенос данных
+    await db.execute(update(BotUser).where(BotUser.bot_id == old_id).values(bot_id=new_id))
+    await db.execute(update(Broadcast).where(Broadcast.bot_id == old_id).values(bot_id=new_id))
+    await db.execute(update(DelayedMessage).where(DelayedMessage.bot_id == old_id).values(bot_id=new_id))
+    await db.execute(update(BotWelcome).where(BotWelcome.bot_id == old_id).values(bot_id=new_id))
+    await db.execute(update(BotConfig).where(BotConfig.bot_id == old_id).values(bot_id=new_id))
+
+    # перенос поведения
+    reserve_bot.delayed_text = dead_bot.delayed_text
+    reserve_bot.delayed_buttons = dead_bot.delayed_buttons
+    reserve_bot.delayed_delay_minutes = dead_bot.delayed_delay_minutes
+    reserve_bot.last_applied_region = dead_bot.last_applied_region
+    reserve_bot.last_applied_at = dead_bot.last_applied_at
+
+    # роли
+    dead_bot.role = BotRole.disabled
+    reserve_bot.role = BotRole.active
 
     await db.commit()
 
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{dead_bot.token}/deleteWebhook"
+            )
+    except:
+        pass
+
+    # применяем конфиг
+    if reserve_bot.last_applied_region:
+        await apply_last_config(db, reserve_bot, reserve_bot.last_applied_region)
+
+    # ставим webhook
+    await set_webhook(reserve_bot)
+
+    # уведомляем
+    await notify_admin(
+        f"✅ Замена успешно завершена!\n"
+        f"Умерший: @{dead_bot.username}\n"
+        f"Новый активный: @{reserve_bot.username}\n"
+    )
+
     return {
-        "replacements": replaced
+        "dead_bot": dead_bot.username,
+        "new_active": reserve_bot.username,
     }
 
 
@@ -484,8 +630,8 @@ async def upsert_bot_config(
     db: AsyncSession = Depends(get_db),
 ):
     bot = await db.get(Bot, bot_id)
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     result = await db.execute(
         select(BotConfig).where(
@@ -522,8 +668,8 @@ async def apply_bot_config(
     result = await db.execute(select(Bot).where(Bot.id == bot_id))
     bot = result.scalar_one_or_none()
 
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     result = await db.execute(
         select(BotConfig).where(
@@ -592,11 +738,8 @@ async def create_broadcast(
     )
     bot = result.scalar_one_or_none()
 
-    if not bot:
-        raise HTTPException(404, "Bot not found")
-
-    if bot.role == BotRole.disabled:
-        raise HTTPException(400, "Bot is disabled")
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     broadcast = Broadcast(
         bot_id=bot_id,
@@ -637,6 +780,10 @@ async def telegram_webhook(
 
     telegram_id = user_data["id"]
 
+    bot = await db.get(Bot, bot_id)
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
+
     # проверяю, есть ли уже такой пользователь
     result = await db.execute(
         select(BotUser).where(
@@ -661,14 +808,6 @@ async def telegram_webhook(
         user.last_seen_at = datetime.utcnow()
 
     await db.commit()
-
-    bot = await db.get(Bot, bot_id)
-
-    if not bot:
-        return {"status": "bot_not_found"}
-
-    if bot.role == BotRole.disabled:
-        return {"status": "bot_disabled"}
 
     # если это /start - отправляю welcome message
     if message.get("text") == "/start":
@@ -741,6 +880,10 @@ async def upsert_welcome(
     data: WelcomeCreateRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    bot = await db.get(Bot, bot_id)
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
+
     result = await db.execute(
         select(BotWelcome).where(BotWelcome.bot_id == bot_id)
     )
@@ -774,8 +917,8 @@ async def set_delayed_message(
     db: AsyncSession = Depends(get_db),
 ):
     bot = await db.get(Bot, bot_id)
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     bot.delayed_text = data.text
     bot.delayed_buttons = data.buttons
@@ -822,6 +965,45 @@ async def send_broadcast_now(
     }
 
 
+@app.post("/controller/webhook")
+async def controller_webhook(update: dict):
+    if not CONTROLLER_BOT_TOKEN:
+        return {"status": "misconfigured"}
+
+    message = update.get("message")
+    if not message:
+        return {"status": "ignored"}
+
+    user = message.get("from")
+    if not user:
+        return {"status": "no_user"}
+
+    telegram_id = user["id"]
+
+    # проверка доступа
+    if telegram_id not in CONTROLLER_ALLOWED_USERS:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{CONTROLLER_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": telegram_id,
+                    "text": "⛔ Доступ к StageControl запрещен.",
+                },
+            )
+        return {"status": "forbidden"}
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        await client.post(
+            f"https://api.telegram.org/bot{CONTROLLER_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": telegram_id,
+                "text": "✅ Добро пожаловать в StageControl",
+            },
+        )
+
+    return {"status": "ok"}
+
+
 # ===== PATCH =====
 @app.patch("/bots/{bot_id}/role", response_model=BotResponse)
 async def update_bot_role(
@@ -859,8 +1041,8 @@ async def update_bot_status(
     result = await db.execute(select(Bot).where(Bot.id == bot_id))
     bot = result.scalar_one_or_none()
 
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     bot.status = BotStatus(data.status)
     await db.commit()
@@ -872,6 +1054,36 @@ async def update_bot_status(
         role=bot.role.value,
         status=bot.status.value,
     )
+
+
+@app.patch("/bots/{bot_id}/enable")
+async def enable_bot(bot_id: int, db: AsyncSession = Depends(get_db)):
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    bot.role = BotRole.active
+    bot.status = BotStatus.alive
+
+    await db.commit()
+
+    await set_webhook(bot)
+
+    return {"status": "enabled"}
+
+
+@app.patch("/bots/{bot_id}/disable")
+async def disable_bot(bot_id: int, db: AsyncSession = Depends(get_db)):
+    bot = await db.get(Bot, bot_id)
+    if not bot or bot.role == BotRole.disabled:
+        raise HTTPException(status_code=404, detail="Bot not found or disabled")
+
+    bot.role = BotRole.disabled
+    bot.status = BotStatus.dead
+
+    await db.commit()
+
+    return {"status": "disabled"}
 
 
 @app.patch("/broadcasts/{broadcast_id}/status")

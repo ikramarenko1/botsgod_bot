@@ -4,8 +4,8 @@ import json
 
 BACKEND_URL = "http://127.0.0.1:8000"
 
-HEALTHCHECK_INTERVAL_SEC = 120
-REPLACEMENT_INTERVAL_SEC = 300
+HEALTHCHECK_INTERVAL_SEC = 60
+REPLACEMENT_INTERVAL_SEC = 15
 BROADCAST_CHECK_INTERVAL = 10
 
 
@@ -105,13 +105,17 @@ async def process_broadcast(client, broadcast):
         }
     )
 
+    final_status = "sent" if sent > 0 else "failed"
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast['id']}/status",
-        json={"status": "sent"},
+        json={"status": final_status},
     )
 
-    print(f"[worker] broadcast id:{broadcast['id']} sent")
-    print(f"Total: {total}, Sent: {sent}, Failed: {failed}")
+    print(
+        f"[worker] broadcast id:{broadcast['id']} finished. "
+        f"Status: {final_status}. "
+        f"Total: {total}, Sent: {sent}, Failed: {failed}"
+    )
 
 
 async def process_delayed(client, msg):
@@ -130,14 +134,22 @@ async def process_delayed(client, msg):
             ]
         }
 
-    await client.post(
-        f"https://api.telegram.org/bot{msg['token']}/sendMessage",
-        json=payload,
-    )
+    try:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{msg['token']}/sendMessage",
+            json=payload,
+            timeout=10,
+        )
 
-    await client.patch(
-        f"{BACKEND_URL}/delayed/{msg['id']}/sent"
-    )
+        if resp.status_code == 200:
+            await client.patch(
+                f"{BACKEND_URL}/delayed/{msg['id']}/sent"
+            )
+        else:
+            print(f"[worker] delayed failed id:{msg['id']} status:{resp.status_code}")
+
+    except Exception as e:
+        print(f"[worker] delayed exception id:{msg['id']}:", e)
 
 
 async def call_broadcast_worker(client: httpx.AsyncClient):
@@ -167,10 +179,22 @@ async def call_delayed_worker(client):
 
 
 async def loop():
+    print("[worker] started")
     async with httpx.AsyncClient() as client:
+        last_health = 0
+        last_replace = 0
+
         while True:
-            await call_healthcheck_all(client)
-            await call_replacement(client)
+            now = asyncio.get_event_loop().time()
+
+            if now - last_health >= HEALTHCHECK_INTERVAL_SEC:
+                await call_healthcheck_all(client)
+                last_health = now
+
+            if now - last_replace >= REPLACEMENT_INTERVAL_SEC:
+                await call_replacement(client)
+                last_replace = now
+
             await call_broadcast_worker(client)
             await call_delayed_worker(client)
 

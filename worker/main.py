@@ -1,12 +1,42 @@
 import asyncio
 import httpx
+import os
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 
-BACKEND_URL = "http://127.0.0.1:8000"
+from dotenv import load_dotenv
+
+load_dotenv()
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
+BACKEND_URL = os.getenv("BACKEND_URL")
+
+LOG_FILE = f"../{os.getenv('WORKER_LOG_FILE')}"
+
+logger = logging.getLogger("stagecontrol_worker")
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=10_000_000,
+        backupCount=3
+    )
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s"
+    )
+
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 HEALTHCHECK_INTERVAL_SEC = 60
 REPLACEMENT_INTERVAL_SEC = 15
 BROADCAST_CHECK_INTERVAL = 10
+
+HEADERS = {
+    "X-API-KEY": INTERNAL_API_KEY
+}
 
 
 async def call_healthcheck_all(client: httpx.AsyncClient):
@@ -14,27 +44,27 @@ async def call_healthcheck_all(client: httpx.AsyncClient):
         r = await client.post(f"{BACKEND_URL}/bots/health-check/all", timeout=30)
         r.raise_for_status()
         data = r.json()
-        print("[worker] health-check/all:", data)
+        logger.info(f"[worker] health-check/all: {data}")
         return data
     except Exception as e:
-        print("[worker] health-check/all error:", e)
+        logger.error(f"[worker] health-check/all error: {e}")
         return None
 
 
 async def call_replacement(client: httpx.AsyncClient):
     try:
-        r = await client.post(f"{BACKEND_URL}/bots/replacement", timeout=30)
+        r = await client.post(f"{BACKEND_URL}/bots/replacement", timeout=30, headers=HEADERS)
         r.raise_for_status()
         data = r.json()
-        print("[worker] replacement:", data)
+        logger.info(f"[worker] replacement: {data}")
         return data
     except Exception as e:
-        print("[worker] replacement error:", e)
+        logger.error(f"[worker] replacement error: {e}")
         return None
 
 
 async def process_broadcast(client, broadcast):
-    print(f"[worker] attempting to lock broadcast id:{broadcast['id']}")
+    logger.info(f"[worker] attempting to lock broadcast id:{broadcast['id']}")
 
     try:
         r = await client.patch(
@@ -43,10 +73,10 @@ async def process_broadcast(client, broadcast):
         )
         r.raise_for_status()
     except Exception:
-        print(f"[worker] broadcast id:{broadcast['id']} already locked")
+        logger.warning(f"[worker] broadcast id:{broadcast['id']} already locked")
         return
 
-    print(f"[worker] processing broadcast id:{broadcast['id']}")
+    logger.info(f"[worker] processing broadcast id:{broadcast['id']}")
 
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast['id']}/stats",
@@ -111,7 +141,7 @@ async def process_broadcast(client, broadcast):
         json={"status": final_status},
     )
 
-    print(
+    logger.info(
         f"[worker] broadcast id:{broadcast['id']} finished. "
         f"Status: {final_status}. "
         f"Total: {total}, Sent: {sent}, Failed: {failed}"
@@ -119,7 +149,7 @@ async def process_broadcast(client, broadcast):
 
 
 async def process_delayed(client, msg):
-    print(f"[worker] sending delayed id:{msg['id']}")
+    logger.info(f"[worker] sending delayed id:{msg['id']}")
 
     payload = {
         "chat_id": msg["telegram_id"],
@@ -146,10 +176,10 @@ async def process_delayed(client, msg):
                 f"{BACKEND_URL}/delayed/{msg['id']}/sent"
             )
         else:
-            print(f"[worker] delayed failed id:{msg['id']} status:{resp.status_code}")
+            logger.warning(f"[worker] delayed failed id:{msg['id']} status:{resp.status_code}")
 
     except Exception as e:
-        print(f"[worker] delayed exception id:{msg['id']}:", e)
+        logger.error(f"[worker] delayed exception id:{msg['id']}: {e}")
 
 
 async def call_broadcast_worker(client: httpx.AsyncClient):
@@ -162,7 +192,7 @@ async def call_broadcast_worker(client: httpx.AsyncClient):
             await process_broadcast(client, b)
 
     except Exception as e:
-        print("[worker] broadcast worker error:", e)
+        logger.error(f"[worker] broadcast worker error: {e}")
 
 
 async def call_delayed_worker(client):
@@ -175,11 +205,11 @@ async def call_delayed_worker(client):
             await process_delayed(client, msg)
 
     except Exception as e:
-        print("[worker] delayed error:", e)
+        logger.error(f"[worker] delayed error: {e}")
 
 
 async def loop():
-    print("[worker] started")
+    logger.info("[worker] started")
     async with httpx.AsyncClient() as client:
         last_health = 0
         last_replace = 0

@@ -9,6 +9,7 @@ from backend.models.broadcast import Broadcast
 from backend.models.user import BotUser
 from backend.models.bot_welcome import BotWelcome
 from backend.models.delayed_message import DelayedMessage
+from backend.models.replacement_log import ReplacementLog
 
 
 async def init():

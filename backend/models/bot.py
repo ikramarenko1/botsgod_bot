@@ -1,6 +1,6 @@
 from typing import Optional
 
-from sqlalchemy import String, DateTime, Enum, JSON, Text
+from sqlalchemy import String, DateTime, Enum, JSON, Text, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import enum
@@ -26,6 +26,7 @@ class Bot(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(255), unique=True)
     token: Mapped[str] = mapped_column(String(255))
+    owner_telegram_id = mapped_column(BigInteger, nullable=False, index=True)
     role: Mapped[BotRole] = mapped_column(Enum(BotRole), default=BotRole.reserve)
     status: Mapped[BotStatus] = mapped_column(Enum(BotStatus), default=BotStatus.alive)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

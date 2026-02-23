@@ -52,18 +52,19 @@ LOG_FILE = os.getenv("LOG_FILE")
 logger = logging.getLogger("stagecontrol")
 logger.setLevel(logging.INFO)
 
-handler = RotatingFileHandler(
-    LOG_FILE,
-    maxBytes=10_000_000,   # 10MB
-    backupCount=3
-)
-
-formatter = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(message)s"
-)
-
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+if LOG_FILE:
+    handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=10_000_000,
+        backupCount=3
+    )
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+else:
+    logging.basicConfig(level=logging.INFO)
 
 
 async def verify_api_key(x_api_key: Optional[str] = Header(None)):
@@ -72,6 +73,49 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)):
 
     if x_api_key != INTERNAL_API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden")
+
+
+async def get_owner_id(x_telegram_id: Optional[str] = Header(None)):
+    if not x_telegram_id:
+        raise HTTPException(status_code=400, detail="X-TELEGRAM-ID header required")
+    return int(x_telegram_id)
+
+
+async def get_owned_bot(
+    bot_id: int,
+    owner_id: int = Depends(get_owner_id),
+    db: AsyncSession = Depends(get_db),
+):
+    bot = await db.get(Bot, bot_id)
+
+    if not bot or bot.owner_telegram_id != owner_id:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    return bot
+
+
+# Helper dependency for owned broadcast
+async def get_owned_broadcast(
+    broadcast_id: int,
+    owner_id: int = Depends(get_owner_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Broadcast, Bot)
+        .join(Bot, Broadcast.bot_id == Bot.id)
+        .where(
+            Broadcast.id == broadcast_id,
+            Bot.owner_telegram_id == owner_id,
+        )
+    )
+
+    row = result.first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    broadcast, _ = row
+    return broadcast
 
 
 async def notify_admin(text: str):
@@ -159,8 +203,13 @@ async def health():
 
 
 @app.get("/bots", response_model=List[BotResponse])
-async def list_bots(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Bot))
+async def list_bots(
+    owner_id: int = Depends(get_owner_id),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(Bot).where(Bot.owner_telegram_id == owner_id)
+    )
     bots = result.scalars().all()
 
     return [
@@ -176,11 +225,11 @@ async def list_bots(db: AsyncSession = Depends(get_db)):
 
 @app.get("/bots/{bot_id}/configs", response_model=list[BotConfigResponse])
 async def list_bot_configs(
-    bot_id: int,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(BotConfig).where(BotConfig.bot_id == bot_id)
+        select(BotConfig).where(BotConfig.bot_id == bot.id)
     )
     return result.scalars().all()
 
@@ -190,11 +239,11 @@ async def list_bot_configs(
     response_model=list[BroadcastResponse],
 )
 async def list_broadcasts(
-    bot_id: int,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Broadcast).where(Broadcast.bot_id == bot_id)
+        select(Broadcast).where(Broadcast.bot_id == bot.id)
     )
     broadcasts = result.scalars().all()
 
@@ -220,15 +269,11 @@ async def list_broadcasts(
 
 @app.get("/bots/{bot_id}/users")
 async def list_bot_users(
-    bot_id: int,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db)
 ):
-    bot = await db.get(Bot, bot_id)
-    if not bot or bot.role != BotRole.active:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
     query = select(BotUser).where(
-        BotUser.bot_id == bot_id,
+        BotUser.bot_id == bot.id,
         BotUser.is_active == True,
     )
 
@@ -245,14 +290,10 @@ async def list_bot_users(
 
 
 @app.get("/bots/{bot_id}/users/export")
-async def export_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
-    bot = await db.get(Bot, bot_id)
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
+async def export_bot_users(bot: Bot = Depends(get_owned_bot), db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(BotUser).where(
-            BotUser.bot_id == bot_id,
+            BotUser.bot_id == bot.id,
             BotUser.is_active == True,
         )
     )
@@ -289,13 +330,39 @@ async def export_bot_users(bot_id: int, db: AsyncSession = Depends(get_db)):
         iter([output.getvalue()]),
         media_type="text/csv",
         headers={
-            "Content-Disposition": f"attachment; filename=bot_{bot_id}_users.csv"
+            "Content-Disposition": f"attachment; filename=bot_{bot.id}_users.csv"
         },
     )
 
 
+@app.get("/system/bots/{bot_id}/users")
+async def system_list_bot_users(
+    bot_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
+    result = await db.execute(
+        select(BotUser).where(
+            BotUser.bot_id == bot_id,
+            BotUser.is_active == True,
+        )
+    )
+    users = result.scalars().all()
+
+    return [
+        {
+            "id": u.id,
+            "telegram_id": u.telegram_id,
+        }
+        for u in users
+    ]
+
+
 @app.get("/broadcasts/scheduled")
-async def get_scheduled(db: AsyncSession = Depends(get_db)):
+async def get_scheduled(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
     now = datetime.utcnow()
 
     result = await db.execute(
@@ -328,27 +395,32 @@ async def get_scheduled(db: AsyncSession = Depends(get_db)):
 
 @app.get("/bots/{bot_id}/stats")
 async def bot_stats(
-    bot_id: int,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
 ):
-    bot = await db.get(Bot, bot_id)
-    if not bot or bot.role != BotRole.active:
-        raise HTTPException(status_code=404, detail="Bot not found or not active")
-
     now = datetime.utcnow()
     last_24h = now - timedelta(hours=24)
 
     # === USERS ===
     total_users_result = await db.execute(
         select(func.count()).select_from(BotUser)
-        .where(BotUser.bot_id == bot_id)
+        .where(BotUser.bot_id == bot.id)
     )
     total_users = total_users_result.scalar() or 0
+
+    premium_result = await db.execute(
+        select(func.count()).select_from(BotUser)
+        .where(
+            BotUser.bot_id == bot.id,
+            BotUser.is_premium == True,
+        )
+    )
+    premium_users = premium_result.scalar() or 0
 
     active_users_result = await db.execute(
         select(func.count()).select_from(BotUser)
         .where(
-            BotUser.bot_id == bot_id,
+            BotUser.bot_id == bot.id,
             BotUser.last_seen_at >= last_24h,
         )
     )
@@ -357,14 +429,14 @@ async def bot_stats(
     # === BROADCASTS ===
     total_broadcasts_result = await db.execute(
         select(func.count()).select_from(Broadcast)
-        .where(Broadcast.bot_id == bot_id)
+        .where(Broadcast.bot_id == bot.id)
     )
     total_broadcasts = total_broadcasts_result.scalar() or 0
 
     sent_result = await db.execute(
         select(func.count()).select_from(Broadcast)
         .where(
-            Broadcast.bot_id == bot_id,
+            Broadcast.bot_id == bot.id,
             Broadcast.status == BroadcastStatus.sent,
         )
     )
@@ -373,7 +445,7 @@ async def bot_stats(
     failed_result = await db.execute(
         select(func.count()).select_from(Broadcast)
         .where(
-            Broadcast.bot_id == bot_id,
+            Broadcast.bot_id == bot.id,
             Broadcast.status == BroadcastStatus.failed,
         )
     )
@@ -382,7 +454,7 @@ async def bot_stats(
     draft_result = await db.execute(
         select(func.count()).select_from(Broadcast)
         .where(
-            Broadcast.bot_id == bot_id,
+            Broadcast.bot_id == bot.id,
             Broadcast.status == BroadcastStatus.draft,
         )
     )
@@ -390,6 +462,7 @@ async def bot_stats(
 
     return {
         "total_users": total_users,
+        "premium_users": premium_users,
         "active_last_24h": active_last_24h,
         "total_broadcasts": total_broadcasts,
         "sent_broadcasts": sent_broadcasts,
@@ -399,9 +472,9 @@ async def bot_stats(
 
 
 @app.get("/bots/{bot_id}/welcome", response_model=WelcomeResponse)
-async def get_welcome(bot_id: int, db: AsyncSession = Depends(get_db)):
+async def get_welcome(bot: Bot = Depends(get_owned_bot), db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(BotWelcome).where(BotWelcome.bot_id == bot_id)
+        select(BotWelcome).where(BotWelcome.bot_id == bot.id)
     )
     welcome = result.scalar_one_or_none()
 
@@ -412,7 +485,10 @@ async def get_welcome(bot_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/delayed/pending")
-async def get_pending_delayed(db: AsyncSession = Depends(get_db)):
+async def get_pending_delayed(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
     now = datetime.utcnow()
 
     result = await db.execute(
@@ -466,6 +542,7 @@ async def get_replacement_logs(
 @app.post("/bots/add", response_model=BotResponse)
 async def add_bot(
     data: BotAddRequest,
+    owner_id: int = Depends(get_owner_id),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
@@ -496,6 +573,7 @@ async def add_bot(
         token=data.token,
         role=BotRole.reserve,
         status=BotStatus.alive,
+        owner_telegram_id=owner_id,
     )
 
     db.add(bot)
@@ -538,14 +616,9 @@ async def add_bot(
 
 @app.post("/bots/{bot_id}/health-check", response_model=BotResponse)
 async def health_check_bot(
-    bot_id: int,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Bot).where(Bot.id == bot_id))
-    bot = result.scalar_one_or_none()
-
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -573,7 +646,10 @@ async def health_check_bot(
 
 
 @app.post("/bots/health-check/all")
-async def health_check_all(db: AsyncSession = Depends(get_db)):
+async def health_check_all(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
     logger.info("Health-check started")
 
     result = await db.execute(
@@ -769,18 +845,14 @@ async def replacement(
 
 @app.post("/bots/{bot_id}/configs", response_model=BotConfigResponse)
 async def upsert_bot_config(
-    bot_id: int,
     data: BotConfigCreate,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
-    bot = await db.get(Bot, bot_id)
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
     result = await db.execute(
         select(BotConfig).where(
-            BotConfig.bot_id == bot_id,
+            BotConfig.bot_id == bot.id,
             BotConfig.region == data.region,
         )
     )
@@ -791,7 +863,7 @@ async def upsert_bot_config(
         config.description = data.description
     else:
         config = BotConfig(
-            bot_id=bot_id,
+            bot_id=bot.id,
             region=data.region,
             name=data.name,
             description=data.description,
@@ -805,21 +877,14 @@ async def upsert_bot_config(
 
 @app.post("/bots/{bot_id}/configs/apply")
 async def apply_bot_config(
-    bot_id: int,
     data: BotApplyConfigRequest,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
-
-    result = await db.execute(select(Bot).where(Bot.id == bot_id))
-    bot = result.scalar_one_or_none()
-
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
     result = await db.execute(
         select(BotConfig).where(
-            BotConfig.bot_id == bot_id,
+            BotConfig.bot_id == bot.id,
             BotConfig.region == data.region,
         )
     )
@@ -875,21 +940,13 @@ async def apply_bot_config(
     response_model=BroadcastResponse,
 )
 async def create_broadcast(
-    bot_id: int,
     data: BroadcastCreateRequest,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
-    result = await db.execute(
-        select(Bot).where(Bot.id == bot_id)
-    )
-    bot = result.scalar_one_or_none()
-
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
     broadcast = Broadcast(
-        bot_id=bot_id,
+        bot_id=bot.id,
         region=data.region,
         text=data.text,
         buttons=data.buttons,
@@ -947,12 +1004,16 @@ async def telegram_webhook(
             username=user_data.get("username"),
             first_name=user_data.get("first_name"),
             last_name=user_data.get("last_name"),
+            is_premium=user_data.get("is_premium"),
+            language_code = user_data.get("language_code"),
             created_at=datetime.utcnow(),
             last_seen_at=datetime.utcnow(),
         )
         db.add(user)
     else:
         user.last_seen_at = datetime.utcnow()
+        user.is_premium = user_data.get("is_premium")
+        user.language_code = user_data.get("language_code")
 
     await db.commit()
 
@@ -1023,16 +1084,12 @@ async def telegram_webhook(
 
 @app.post("/bots/{bot_id}/welcome", response_model=WelcomeResponse)
 async def upsert_welcome(
-    bot_id: int,
     data: WelcomeCreateRequest,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
 ):
-    bot = await db.get(Bot, bot_id)
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
     result = await db.execute(
-        select(BotWelcome).where(BotWelcome.bot_id == bot_id)
+        select(BotWelcome).where(BotWelcome.bot_id == bot.id)
     )
     welcome = result.scalar_one_or_none()
 
@@ -1043,7 +1100,7 @@ async def upsert_welcome(
         welcome.is_enabled = data.is_enabled
     else:
         welcome = BotWelcome(
-            bot_id=bot_id,
+            bot_id=bot.id,
             text=data.text,
             photo_file_id=data.photo_file_id,
             buttons=data.buttons,
@@ -1059,14 +1116,10 @@ async def upsert_welcome(
 
 @app.post("/bots/{bot_id}/delayed")
 async def set_delayed_message(
-    bot_id: int,
     data: DelayedConfigRequest,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
 ):
-    bot = await db.get(Bot, bot_id)
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
     bot.delayed_text = data.text
     bot.delayed_buttons = data.buttons
     bot.delayed_delay_minutes = data.delay_minutes
@@ -1078,16 +1131,9 @@ async def set_delayed_message(
 
 @app.post("/broadcasts/{broadcast_id}/send-now")
 async def send_broadcast_now(
-    broadcast_id: int,
+    broadcast: Broadcast = Depends(get_owned_broadcast),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Broadcast).where(Broadcast.id == broadcast_id)
-    )
-    broadcast = result.scalar_one_or_none()
-
-    if not broadcast:
-        raise HTTPException(404, "Broadcast not found")
 
     # можно отправлять только draft или failed
     if broadcast.status not in (
@@ -1157,19 +1203,13 @@ async def controller_webhook(update: dict):
 # ===== PATCH =====
 @app.patch("/bots/{bot_id}/role", response_model=BotResponse)
 async def update_bot_role(
-    bot_id: int,
     data: BotRoleUpdateRequest,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
     if data.role not in ("active", "reserve", "disabled"):
         raise HTTPException(status_code=400, detail="Invalid role")
-
-    result = await db.execute(select(Bot).where(Bot.id == bot_id))
-    bot = result.scalar_one_or_none()
-
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
 
     bot.role = BotRole(data.role)
     await db.commit()
@@ -1185,16 +1225,10 @@ async def update_bot_role(
 
 @app.patch("/bots/{bot_id}/status", response_model=BotResponse)
 async def update_bot_status(
-    bot_id: int,
     data: BotStatusUpdate,
+    bot: Bot = Depends(get_owned_bot),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Bot).where(Bot.id == bot_id))
-    bot = result.scalar_one_or_none()
-
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
     bot.status = BotStatus(data.status)
     await db.commit()
     await db.refresh(bot)
@@ -1209,14 +1243,10 @@ async def update_bot_status(
 
 @app.patch("/bots/{bot_id}/enable")
 async def enable_bot(
-        bot_id: int,
+        bot: Bot = Depends(get_owned_bot),
         db: AsyncSession = Depends(get_db),
         _: None = Depends(verify_api_key),
 ):
-    bot = await db.get(Bot, bot_id)
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
-
     bot.role = BotRole.active
     bot.status = BotStatus.alive
 
@@ -1229,14 +1259,10 @@ async def enable_bot(
 
 @app.patch("/bots/{bot_id}/disable")
 async def disable_bot(
-        bot_id: int,
+        bot: Bot = Depends(get_owned_bot),
         db: AsyncSession = Depends(get_db),
         _: None = Depends(verify_api_key),
 ):
-    bot = await db.get(Bot, bot_id)
-    if not bot or bot.role == BotRole.disabled:
-        raise HTTPException(status_code=404, detail="Bot not found or disabled")
-
     bot.role = BotRole.disabled
     bot.status = BotStatus.dead
 
@@ -1247,8 +1273,9 @@ async def disable_bot(
 
 @app.patch("/broadcasts/{broadcast_id}/status")
 async def update_broadcast_status(
-    broadcast_id: int,
     data: BroadcastStatusUpdate,
+    broadcast_id: int,
+    _: None = Depends(verify_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -1257,7 +1284,7 @@ async def update_broadcast_status(
     broadcast = result.scalar_one_or_none()
 
     if not broadcast:
-        raise HTTPException(status_code=404, detail="Broadcast not found")
+        raise HTTPException(404, "Broadcast not found")
 
     current = broadcast.status.value
     new = data.status
@@ -1290,8 +1317,9 @@ async def update_broadcast_status(
 
 @app.patch("/broadcasts/{broadcast_id}/stats")
 async def update_broadcast_stats(
-    broadcast_id: int,
     data: dict,
+    broadcast_id: int,
+    _: None = Depends(verify_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -1300,7 +1328,7 @@ async def update_broadcast_stats(
     broadcast = result.scalar_one_or_none()
 
     if not broadcast:
-        raise HTTPException(status_code=404, detail="Broadcast not found")
+        raise HTTPException(404, "Broadcast not found")
 
     if "total_users" in data:
         broadcast.total_users = data["total_users"]
@@ -1325,18 +1353,10 @@ async def update_broadcast_stats(
 
 @app.patch("/broadcasts/{broadcast_id}/schedule")
 async def update_broadcast_schedule(
-    broadcast_id: int,
     data: BroadcastScheduleUpdate,
+    broadcast: Broadcast = Depends(get_owned_broadcast),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Broadcast).where(Broadcast.id == broadcast_id)
-    )
-    broadcast = result.scalar_one_or_none()
-
-    if not broadcast:
-        raise HTTPException(status_code=404, detail="Broadcast not found")
-
     if broadcast.status not in (
         BroadcastStatus.draft,
         BroadcastStatus.scheduled,
@@ -1363,7 +1383,11 @@ async def update_broadcast_schedule(
 
 
 @app.patch("/delayed/{msg_id}/sent")
-async def mark_delayed_sent(msg_id: int, db: AsyncSession = Depends(get_db)):
+async def mark_delayed_sent(
+    msg_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
     result = await db.execute(
         select(DelayedMessage).where(DelayedMessage.id == msg_id)
     )
@@ -1381,14 +1405,10 @@ async def mark_delayed_sent(msg_id: int, db: AsyncSession = Depends(get_db)):
 # ===== DELETE =====
 @app.delete("/bots/{bot_id}")
 async def delete_bot(
-        bot_id: int,
+        bot: Bot = Depends(get_owned_bot),
         db: AsyncSession = Depends(get_db),
         _: None = Depends(verify_api_key),
 ):
-    bot = await db.get(Bot, bot_id)
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
-
     # удаляю webhook в Telegram (чтобы не долбился в сервер)
     try:
         async with httpx.AsyncClient(timeout=10) as client:

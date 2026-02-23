@@ -23,6 +23,8 @@ class BotUser(Base):
     last_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_premium: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    language_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

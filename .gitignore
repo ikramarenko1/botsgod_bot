@@ -15,3 +15,6 @@ venv/
 
 # Logs
 *.log
+
+# Mediafiles
+media/

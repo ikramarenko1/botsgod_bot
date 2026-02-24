@@ -3,9 +3,10 @@ import io
 import csv
 import os
 import logging
+import json
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, Depends, HTTPException, Header
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File
+from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, update, delete
 from datetime import datetime, timedelta
@@ -46,6 +47,12 @@ CONTROLLER_ALLOWED_USERS = os.getenv("CONTROLLER_ALLOWED_USERS", "")
 CONTROLLER_ALLOWED_USERS = [
     int(x.strip()) for x in CONTROLLER_ALLOWED_USERS.split(",") if x.strip()
 ]
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+
+MEDIA_DIR = os.path.join(PROJECT_ROOT, "media")
+os.makedirs(MEDIA_DIR, exist_ok=True)
 
 LOG_FILE = os.getenv("LOG_FILE")
 
@@ -94,7 +101,6 @@ async def get_owned_bot(
     return bot
 
 
-# Helper dependency for owned broadcast
 async def get_owned_broadcast(
     broadcast_id: int,
     owner_id: int = Depends(get_owner_id),
@@ -399,71 +405,117 @@ async def bot_stats(
     db: AsyncSession = Depends(get_db),
 ):
     now = datetime.utcnow()
-    last_24h = now - timedelta(hours=24)
+    last_hour = now - timedelta(hours=1)
+    last_day = now - timedelta(days=1)
+    last_week = now - timedelta(days=7)
 
     # === USERS ===
-    total_users_result = await db.execute(
-        select(func.count()).select_from(BotUser)
+    total_users = (
+        await db.execute(
+            select(func.count()).where(BotUser.bot_id == bot.id)
+        )
+    ).scalar() or 0
+
+    premium_users = (
+        await db.execute(
+            select(func.count()).where(
+                BotUser.bot_id == bot.id,
+                BotUser.is_premium == True,
+            )
+        )
+    ).scalar() or 0
+
+    normal_users = total_users - premium_users
+
+    active_last_24h = (
+        await db.execute(
+            select(func.count()).where(
+                BotUser.bot_id == bot.id,
+                BotUser.last_seen_at >= last_day,
+            )
+        )
+    ).scalar() or 0
+
+    # === GEO ===
+    geo_result = await db.execute(
+        select(BotUser.language_code, func.count())
         .where(BotUser.bot_id == bot.id)
+        .group_by(BotUser.language_code)
     )
-    total_users = total_users_result.scalar() or 0
 
-    premium_result = await db.execute(
-        select(func.count()).select_from(BotUser)
-        .where(
-            BotUser.bot_id == bot.id,
-            BotUser.is_premium == True,
-        )
-    )
-    premium_users = premium_result.scalar() or 0
+    geo = {row[0] or "unknown": row[1] for row in geo_result.all()}
 
-    active_users_result = await db.execute(
-        select(func.count()).select_from(BotUser)
-        .where(
-            BotUser.bot_id == bot.id,
-            BotUser.last_seen_at >= last_24h,
+    # === GROWTH ===
+    growth_hour = (
+        await db.execute(
+            select(func.count()).where(
+                BotUser.bot_id == bot.id,
+                BotUser.created_at >= last_hour,
+            )
         )
-    )
-    active_last_24h = active_users_result.scalar() or 0
+    ).scalar() or 0
+
+    growth_day = (
+        await db.execute(
+            select(func.count()).where(
+                BotUser.bot_id == bot.id,
+                BotUser.created_at >= last_day,
+            )
+        )
+    ).scalar() or 0
+
+    growth_week = (
+        await db.execute(
+            select(func.count()).where(
+                BotUser.bot_id == bot.id,
+                BotUser.created_at >= last_week,
+            )
+        )
+    ).scalar() or 0
 
     # === BROADCASTS ===
-    total_broadcasts_result = await db.execute(
-        select(func.count()).select_from(Broadcast)
-        .where(Broadcast.bot_id == bot.id)
-    )
-    total_broadcasts = total_broadcasts_result.scalar() or 0
-
-    sent_result = await db.execute(
-        select(func.count()).select_from(Broadcast)
-        .where(
-            Broadcast.bot_id == bot.id,
-            Broadcast.status == BroadcastStatus.sent,
+    total_broadcasts = (
+        await db.execute(
+            select(func.count()).where(Broadcast.bot_id == bot.id)
         )
-    )
-    sent_broadcasts = sent_result.scalar() or 0
+    ).scalar() or 0
 
-    failed_result = await db.execute(
-        select(func.count()).select_from(Broadcast)
-        .where(
-            Broadcast.bot_id == bot.id,
-            Broadcast.status == BroadcastStatus.failed,
+    sent_broadcasts = (
+        await db.execute(
+            select(func.count()).where(
+                Broadcast.bot_id == bot.id,
+                Broadcast.status == BroadcastStatus.sent,
+            )
         )
-    )
-    failed_broadcasts = failed_result.scalar() or 0
+    ).scalar() or 0
 
-    draft_result = await db.execute(
-        select(func.count()).select_from(Broadcast)
-        .where(
-            Broadcast.bot_id == bot.id,
-            Broadcast.status == BroadcastStatus.draft,
+    failed_broadcasts = (
+        await db.execute(
+            select(func.count()).where(
+                Broadcast.bot_id == bot.id,
+                Broadcast.status == BroadcastStatus.failed,
+            )
         )
-    )
-    draft_broadcasts = draft_result.scalar() or 0
+    ).scalar() or 0
+
+    draft_broadcasts = (
+        await db.execute(
+            select(func.count()).where(
+                Broadcast.bot_id == bot.id,
+                Broadcast.status == BroadcastStatus.draft,
+            )
+        )
+    ).scalar() or 0
 
     return {
         "total_users": total_users,
         "premium_users": premium_users,
+        "normal_users": normal_users,
         "active_last_24h": active_last_24h,
+        "geo": geo,
+        "growth_hour": growth_hour,
+        "growth_day": growth_day,
+        "growth_week": growth_week,
         "total_broadcasts": total_broadcasts,
         "sent_broadcasts": sent_broadcasts,
         "failed_broadcasts": failed_broadcasts,
@@ -482,6 +534,50 @@ async def get_welcome(bot: Bot = Depends(get_owned_bot), db: AsyncSession = Depe
         raise HTTPException(404, "Welcome message not set")
 
     return welcome
+
+
+@app.get("/bots/{bot_id}/welcome/photo")
+async def get_welcome_photo(
+    bot: Bot = Depends(get_owned_bot),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(BotWelcome).where(BotWelcome.bot_id == bot.id)
+    )
+    welcome = result.scalar_one_or_none()
+
+    if not welcome or not welcome.photo_path:
+        raise HTTPException(404, "Photo not found")
+
+    if not os.path.exists(welcome.photo_path):
+        raise HTTPException(404, "File missing")
+
+    return FileResponse(welcome.photo_path)
+
+
+@app.get("/bots/{bot_id}/delayed/photo")
+async def get_delayed_photo(
+    bot: Bot = Depends(get_owned_bot),
+):
+    if not bot.delayed_photo_path:
+        raise HTTPException(404, "Photo not set")
+
+    if not os.path.exists(bot.delayed_photo_path):
+        raise HTTPException(404, "File missing")
+
+    return FileResponse(bot.delayed_photo_path)
+
+
+@app.get("/bots/{bot_id}/delayed")
+async def get_delayed_config(
+    bot: Bot = Depends(get_owned_bot),
+):
+    return {
+        "text": bot.delayed_text,
+        "buttons": bot.delayed_buttons,
+        "delay_minutes": bot.delayed_delay_minutes,
+        "photo_path": bot.delayed_photo_path,
+    }
 
 
 @app.get("/delayed/pending")
@@ -511,6 +607,7 @@ async def get_pending_delayed(
             "telegram_id": user.telegram_id,
             "text": msg.text,
             "buttons": msg.buttons,
+            "photo_path": bot.delayed_photo_path,
             "token": bot.token,
         }
         for msg, bot, user in rows
@@ -536,6 +633,19 @@ async def get_replacement_logs(
         }
         for log in logs
     ]
+
+
+@app.get("/system/bot-token/{bot_id}")
+async def get_bot_token(
+    bot_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        raise HTTPException(404, "Bot not found")
+
+    return {"token": bot.token}
 
 
 # ===== POST =====
@@ -571,7 +681,7 @@ async def add_bot(
     bot = Bot(
         username=username,
         token=data.token,
-        role=BotRole.reserve,
+        role=BotRole.active,
         status=BotStatus.alive,
         owner_telegram_id=owner_id,
     )
@@ -746,6 +856,7 @@ async def replacement(
                 reserve_bot.delayed_text = dead_bot.delayed_text
                 reserve_bot.delayed_buttons = dead_bot.delayed_buttons
                 reserve_bot.delayed_delay_minutes = dead_bot.delayed_delay_minutes
+                reserve_bot.delayed_photo_path = dead_bot.delayed_photo_path
                 reserve_bot.last_applied_region = dead_bot.last_applied_region
                 reserve_bot.last_applied_at = dead_bot.last_applied_at
 
@@ -1018,32 +1129,8 @@ async def telegram_webhook(
     await db.commit()
 
     # если это /start - отправляю welcome message
-    if message.get("text") == "/start":
-        if bot.delayed_text and bot.delayed_delay_minutes:
-            existing_delayed = await db.execute(
-                select(DelayedMessage).where(
-                    DelayedMessage.bot_id == bot_id,
-                    DelayedMessage.user_id == user.id,
-                    DelayedMessage.status == DelayedStatus.pending,
-                )
-            )
-
-            if not existing_delayed.scalar_one_or_none():
-                send_time = datetime.utcnow() + timedelta(
-                    minutes=bot.delayed_delay_minutes
-                )
-
-                delayed = DelayedMessage(
-                    bot_id=bot_id,
-                    user_id=user.id,
-                    text=bot.delayed_text,
-                    buttons=bot.delayed_buttons,
-                    send_at=send_time,
-                )
-
-                db.add(delayed)
-                await db.commit()
-
+    text = message.get("text", "")
+    if text.startswith("/start"):
         result = await db.execute(
             select(BotWelcome).where(
                 BotWelcome.bot_id == bot_id,
@@ -1053,20 +1140,9 @@ async def telegram_webhook(
         welcome = result.scalar_one_or_none()
 
         if welcome:
-            payload = {
-                "chat_id": telegram_id,
-            }
-
-            if welcome.photo_file_id:
-                payload["photo"] = welcome.photo_file_id
-                payload["caption"] = welcome.text
-                method = "sendPhoto"
-            else:
-                payload["text"] = welcome.text
-                method = "sendMessage"
-
+            reply_markup = None
             if welcome.buttons:
-                payload["reply_markup"] = {
+                reply_markup = {
                     "inline_keyboard": [
                         [{"text": b["text"], "url": b["url"]}]
                         for b in welcome.buttons
@@ -1074,10 +1150,45 @@ async def telegram_webhook(
                 }
 
             async with httpx.AsyncClient() as client:
-                await client.post(
-                    f"https://api.telegram.org/bot{bot.token}/{method}",
-                    json=payload,
-                )
+
+                if welcome.photo_path and os.path.exists(welcome.photo_path):
+                    with open(welcome.photo_path, "rb") as photo_file:
+                        await client.post(
+                            f"https://api.telegram.org/bot{bot.token}/sendPhoto",
+                            data={
+                                "chat_id": telegram_id,
+                                "caption": welcome.text or "",
+                                "reply_markup": json.dumps(reply_markup) if reply_markup else None
+                            },
+                            files={
+                                "photo": photo_file
+                            }
+                        )
+
+                elif welcome.text:
+                    await client.post(
+                        f"https://api.telegram.org/bot{bot.token}/sendMessage",
+                        json={
+                            "chat_id": telegram_id,
+                            "text": welcome.text,
+                            "reply_markup": reply_markup
+                        }
+                    )
+
+        if bot.delayed_text and bot.delayed_delay_minutes is not None:
+            send_at = datetime.utcnow() + timedelta(minutes=bot.delayed_delay_minutes)
+
+            delayed_msg = DelayedMessage(
+                bot_id=bot_id,
+                user_id=user.id,
+                text=bot.delayed_text,
+                buttons=bot.delayed_buttons,
+                send_at=send_at,
+                status=DelayedStatus.pending,
+            )
+
+            db.add(delayed_msg)
+            await db.commit()
 
     return {"status": "ok"}
 
@@ -1093,16 +1204,23 @@ async def upsert_welcome(
     )
     welcome = result.scalar_one_or_none()
 
+    if welcome and welcome.photo_path and data.photo_path is None:
+        if os.path.exists(welcome.photo_path):
+            try:
+                os.remove(welcome.photo_path)
+            except Exception as e:
+                logger.error(f"Failed to delete old welcome photo: {e}")
+
     if welcome:
         welcome.text = data.text
-        welcome.photo_file_id = data.photo_file_id
+        welcome.photo_path = data.photo_path
         welcome.buttons = data.buttons
         welcome.is_enabled = data.is_enabled
     else:
         welcome = BotWelcome(
             bot_id=bot.id,
             text=data.text,
-            photo_file_id=data.photo_file_id,
+            photo_path=data.photo_path,
             buttons=data.buttons,
             is_enabled=data.is_enabled,
         )
@@ -1112,6 +1230,60 @@ async def upsert_welcome(
     await db.refresh(welcome)
 
     return welcome
+
+
+@app.post("/bots/{bot_id}/welcome/photo")
+async def upload_welcome_photo(
+    bot: Bot = Depends(get_owned_bot),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Only images allowed")
+
+    content = await file.read()
+
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(400, "File too large")
+
+    bot_dir = os.path.join(MEDIA_DIR, f"bot_{bot.id}")
+    os.makedirs(bot_dir, exist_ok=True)
+
+    extension = file.content_type.split("/")[-1]
+    file_path = os.path.join(bot_dir, f"welcome.{extension}")
+
+    # удалить старое фото если есть
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception as e:
+            logger.error(f"Failed to delete old welcome photo: {e}")
+
+    # сохранить новое
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    result = await db.execute(
+        select(BotWelcome).where(BotWelcome.bot_id == bot.id)
+    )
+    welcome = result.scalar_one_or_none()
+
+    if not welcome:
+        welcome = BotWelcome(
+            bot_id=bot.id,
+            text=None,
+            photo_path=file_path,
+            buttons=None,
+            is_enabled=True
+        )
+        db.add(welcome)
+    else:
+        welcome.photo_path = file_path
+        welcome.is_enabled = True
+
+    await db.commit()
+
+    return {"status": "uploaded"}
 
 
 @app.post("/bots/{bot_id}/delayed")
@@ -1127,6 +1299,38 @@ async def set_delayed_message(
     await db.commit()
 
     return {"status": "configured"}
+
+
+@app.post("/bots/{bot_id}/delayed/photo")
+async def upload_delayed_photo(
+    bot: Bot = Depends(get_owned_bot),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Only images allowed")
+
+    content = await file.read()
+
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(400, "File too large")
+
+    bot_dir = os.path.join(MEDIA_DIR, f"bot_{bot.id}")
+    os.makedirs(bot_dir, exist_ok=True)
+
+    extension = file.content_type.split("/")[-1]
+    file_path = os.path.join(bot_dir, f"delayed.{extension}")
+
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    bot.delayed_photo_path = file_path
+    await db.commit()
+
+    return {"status": "uploaded"}
 
 
 @app.post("/broadcasts/{broadcast_id}/send-now")

@@ -18,7 +18,7 @@ class BotWelcome(Base):
     )
 
     text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    photo_file_id: Mapped[Optional[str]] = mapped_column(nullable=True)
+    photo_path: Mapped[Optional[str]] = mapped_column(nullable=True)
     buttons: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

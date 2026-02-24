@@ -1,7 +1,7 @@
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 
 class DelayedConfigRequest(BaseModel):
-    text: str
-    delay_minutes: int
-    buttons: Optional[list] = None
+    text: Optional[str] = None
+    buttons: Optional[List[dict]] = None
+    delay_minutes: Optional[int] = None

@@ -35,6 +35,7 @@ class Bot(Base):
     delayed_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     delayed_buttons: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     delayed_delay_minutes: Mapped[Optional[int]] = mapped_column(nullable=True)
+    delayed_photo_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     configs = relationship(
         "BotConfig",

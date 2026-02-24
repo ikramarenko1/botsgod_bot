@@ -1,4 +1,6 @@
 import asyncio
+import json
+
 import httpx
 import os
 import logging
@@ -118,6 +120,13 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
                 timeout=10,
             )
 
+            if tg_resp.status_code == 429:
+                data = tg_resp.json()
+                retry_after = data.get("parameters", {}).get("retry_after", 1)
+                logger.warning(f"[worker] 429 flood. Sleeping {retry_after}s")
+                await asyncio.sleep(retry_after)
+                continue
+
             if tg_resp.status_code == 200:
                 sent += 1
             else:
@@ -171,32 +180,64 @@ async def call_broadcast_worker(client: httpx.AsyncClient):
 
 async def process_delayed(client: httpx.AsyncClient, msg: dict):
     try:
-        payload = {
-            "chat_id": msg["telegram_id"],
-            "text": msg["text"],
-        }
-
-        if msg["buttons"]:
-            payload["reply_markup"] = {
+        reply_markup = None
+        if msg.get("buttons"):
+            reply_markup = {
                 "inline_keyboard": [
                     [{"text": b["text"], "url": b["url"]}]
                     for b in msg["buttons"]
                 ]
             }
 
-        resp = await client.post(
-            f"https://api.telegram.org/bot{msg['token']}/sendMessage",
-            json=payload,
-            timeout=10,
-        )
+        # если есть фото
+        if msg.get("photo_path") and os.path.exists(msg["photo_path"]):
+
+            with open(msg["photo_path"], "rb") as photo_file:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{msg['token']}/sendPhoto",
+                    data={
+                        "chat_id": msg["telegram_id"],
+                        "caption": msg["text"] or "",
+                        "reply_markup": json.dumps(reply_markup) if reply_markup else None,
+                    },
+                    files={
+                        "photo": photo_file
+                    },
+                    timeout=10,
+                )
+
+        else:
+            payload = {
+                "chat_id": msg["telegram_id"],
+                "text": msg["text"],
+            }
+
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+
+            resp = await client.post(
+                f"https://api.telegram.org/bot{msg['token']}/sendMessage",
+                json=payload,
+                timeout=10,
+            )
+
+            if resp.status_code == 429:
+                data = resp.json()
+                retry_after = data.get("parameters", {}).get("retry_after", 1)
+                logger.warning(f"[worker] delayed 429. Sleeping {retry_after}s")
+                await asyncio.sleep(retry_after)
+                return await process_delayed(client, msg)
 
         if resp.status_code == 200:
             await client.patch(
                 f"{BACKEND_URL}/delayed/{msg['id']}/sent",
                 headers=HEADERS,
             )
+            logger.info(f"[worker] delayed sent id:{msg['id']}")
         else:
-            logger.warning(f"[worker] delayed failed id:{msg['id']}")
+            logger.warning(
+                f"[worker] delayed failed id:{msg['id']} status:{resp.status_code}"
+            )
 
     except Exception as e:
         logger.error(f"[worker] delayed error id:{msg['id']} {e}")

@@ -19,7 +19,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-from states import AddBotState, WelcomeStates, DelayedStates, BroadcastStates, RenameStates
+from states import AddBotState, WelcomeStates, DelayedStates, BroadcastStates, RenameStates, AvatarStates
 
 load_dotenv()
 
@@ -374,6 +374,7 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
             [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
             [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
             [InlineKeyboardButton(text="✏ Изменить название", callback_data=f"bot_{bot_id}_rename")],
+            [InlineKeyboardButton(text="🖼 Изменить фото", callback_data=f"bot_{bot_id}_avatar")],
             [InlineKeyboardButton(text="⛔ Выключить бота", callback_data=f"bot_{bot_id}_disable")],
             [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
             [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
@@ -408,6 +409,7 @@ async def render_bot_menu_by_id(chat_id: int, owner_id: int, bot_id: str, messag
             [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
             [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
             [InlineKeyboardButton(text="✏ Изменить название", callback_data=f"bot_{bot_id}_rename")],
+            [InlineKeyboardButton(text="🖼 Изменить фото", callback_data=f"bot_{bot_id}_avatar")],
             [InlineKeyboardButton(text="⛔ Выключить бота", callback_data=f"bot_{bot_id}_disable")],
             [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
             [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
@@ -2476,6 +2478,85 @@ async def rename_save_name(message: Message, state: FSMContext):
     ])
 
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await state.clear()
+
+
+@dp.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_avatar"))
+async def avatar_start(callback, state: FSMContext):
+    bot_id = callback.data.split("_")[1]
+
+    await state.update_data(bot_id=bot_id)
+    await state.set_state(AvatarStates.waiting_photo)
+
+    await callback.message.answer(
+        "🖼 <b>Изменение фото бота</b>\n\n"
+        "Отправьте фото которое будет использоваться как аватар бота.",
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+@dp.message(AvatarStates.waiting_photo)
+async def avatar_save(message: Message, state: FSMContext):
+    if not message.photo:
+        await message.answer("Отправьте фото.")
+        return
+
+    owner_id = message.from_user.id
+    data = await state.get_data()
+    bot_id = data["bot_id"]
+
+    file_id = message.photo[-1].file_id
+    file = await bot.get_file(file_id)
+
+    async with httpx.AsyncClient() as client:
+        file_resp = await client.get(
+            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        )
+
+        if file_resp.status_code != 200:
+            await message.answer("❌ Не удалось скачать фото")
+            await state.clear()
+            return
+
+        try:
+            resp = await client.post(
+                f"{BACKEND_URL}/bots/{bot_id}/avatar",
+                headers=owner_headers(owner_id, with_api_key=True),
+                files={
+                    "file": (
+                        "avatar.png",
+                        file_resp.content,
+                        "image/png",
+                    )
+                }
+            )
+
+            resp.raise_for_status()
+
+        except Exception as e:
+            print("AVATAR ERROR:", e)
+            await message.answer("❌ Ошибка обновления фото")
+            await state.clear()
+            return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Настройки бота",
+                    callback_data=f"bot_{bot_id}"
+                )
+            ]
+        ]
+    )
+
+    await message.answer(
+        "✅ <b>Фото бота обновлено!</b>",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
     await state.clear()
 
 

@@ -12,6 +12,7 @@ from sqlalchemy import select, and_, or_, func, update, delete
 from datetime import datetime, timedelta
 from typing import List, Optional
 from dotenv import load_dotenv
+from PIL import Image
 
 from backend.db.session import get_db
 
@@ -205,6 +206,32 @@ async def apply_last_config(db: AsyncSession, bot: Bot, region: str):
     logger.info(
         f"Config applied to @{bot.username} (region={region})"
     )
+
+
+async def apply_avatar(bot: Bot):
+    if not bot.avatar_path:
+        return
+
+    if not os.path.exists(bot.avatar_path):
+        logger.warning(f"Avatar file missing for @{bot.username}")
+        return
+
+    with open(bot.avatar_path, "rb") as f:
+        raw = f.read()
+
+    payload = {
+        "type": "static",
+        "photo": "attach://file"
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setMyProfilePhoto",
+            data={"photo": json.dumps(payload)},
+            files={"file": ("avatar.jpg", raw, "image/jpeg")},
+        )
+
+    logger.info(f"Avatar applied to @{bot.username}")
 
 
 app = FastAPI(title="StageControl Backend")
@@ -889,6 +916,21 @@ async def replacement(
                         reserve_bot.last_applied_region,
                     )
 
+                # применить аватар
+                if dead_bot.avatar_path and os.path.exists(dead_bot.avatar_path):
+                    new_bot_dir = os.path.join(MEDIA_DIR, f"bot_{reserve_bot.id}")
+                    os.makedirs(new_bot_dir, exist_ok=True)
+
+                    new_avatar_path = os.path.join(new_bot_dir, "avatar.jpg")
+
+                    import shutil
+                    shutil.copyfile(dead_bot.avatar_path, new_avatar_path)
+
+                    reserve_bot.avatar_path = new_avatar_path
+                    await db.flush()
+
+                    await apply_avatar(reserve_bot)
+
                 # поставить webhook новому
                 await set_webhook(reserve_bot)
 
@@ -1059,6 +1101,69 @@ async def apply_bot_config(
         "applied_region": data.region,
         "applied_at": bot.last_applied_at,
     }
+
+@app.post("/bots/{bot_id}/avatar")
+async def update_bot_avatar(
+    bot: Bot = Depends(get_owned_bot),
+    db: AsyncSession = Depends(get_db),
+    file: UploadFile = File(...),
+    _: None = Depends(verify_api_key),
+):
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(400, "Only images allowed")
+
+    raw = await file.read()
+
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 5MB)")
+
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:
+        raise HTTPException(400, "Invalid image file")
+
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG", quality=95)
+    jpg_bytes = buffer.getvalue()
+
+    payload = {
+        "type": "static",
+        "photo": "attach://file"
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setMyProfilePhoto",
+            data={"photo": json.dumps(payload)},
+            files={"file": ("avatar.jpg", jpg_bytes, "image/jpeg")},
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Telegram HTTP error: {resp.text}")
+
+    data = resp.json()
+    if not data.get("ok"):
+        raise HTTPException(502, f"Telegram error: {resp.text}")
+
+    bot_dir = os.path.join(MEDIA_DIR, f"bot_{bot.id}")
+    os.makedirs(bot_dir, exist_ok=True)
+
+    avatar_path = os.path.join(bot_dir, "avatar.jpg")
+
+    # удалить старый если есть
+    if bot.avatar_path and os.path.exists(bot.avatar_path):
+        try:
+            os.remove(bot.avatar_path)
+        except Exception as e:
+            logger.warning(f"Failed to remove old avatar: {e}")
+
+    with open(avatar_path, "wb") as f:
+        f.write(jpg_bytes)
+
+    bot.avatar_path = avatar_path
+    await db.commit()
+
+    return {"status": "avatar_updated"}
 
 
 @app.post(
@@ -1699,6 +1804,12 @@ async def delete_bot(
             )
     except Exception:
         pass  # если не удалось - всё равно удаляю
+
+    # удаление папки привязанной к боту
+    bot_dir = os.path.join(MEDIA_DIR, f"bot_{bot.id}")
+    if os.path.exists(bot_dir):
+        import shutil
+        shutil.rmtree(bot_dir, ignore_errors=True)
 
     await db.delete(bot)
     await db.commit()

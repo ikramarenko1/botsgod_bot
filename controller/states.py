@@ -29,3 +29,7 @@ class RenameStates(StatesGroup):
     choose_type = State()
     choose_regions = State()
     waiting_new_name = State()
+
+
+class AvatarStates(StatesGroup):
+    waiting_photo = State()

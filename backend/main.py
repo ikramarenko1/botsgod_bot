@@ -391,6 +391,7 @@ async def get_scheduled(
         {
             "id": broadcast.id,
             "bot_id": broadcast.bot_id,
+            "owner_id": bot.owner_telegram_id,
             "text": broadcast.text,
             "buttons": broadcast.buttons,
             "token": bot.token,
@@ -1056,12 +1057,21 @@ async def create_broadcast(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
+    now = datetime.utcnow()
+    scheduled_at = data.scheduled_at
+
+    if scheduled_at:
+        status = BroadcastStatus.scheduled
+    else:
+        status = BroadcastStatus.draft
+
     broadcast = Broadcast(
         bot_id=bot.id,
         region=data.region,
         text=data.text,
         buttons=data.buttons,
-        scheduled_at=data.scheduled_at,
+        scheduled_at=scheduled_at,
+        status=status,
     )
 
     db.add(broadcast)
@@ -1075,6 +1085,7 @@ async def create_broadcast(
         text=broadcast.text,
         buttons=broadcast.buttons,
         status=broadcast.status.value,
+        scheduled_at=broadcast.scheduled_at,
     )
 
 
@@ -1604,6 +1615,59 @@ async def mark_delayed_sent(
     await db.commit()
 
     return {"status": "ok"}
+
+
+@app.patch("/broadcasts/{broadcast_id}/cancel")
+async def cancel_broadcast(
+    broadcast: Broadcast = Depends(get_owned_broadcast),
+    db: AsyncSession = Depends(get_db),
+):
+    if broadcast.status not in (BroadcastStatus.draft, BroadcastStatus.scheduled):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel broadcast with status {broadcast.status.value}",
+        )
+
+    broadcast.status = BroadcastStatus.cancelled
+    await db.commit()
+    await db.refresh(broadcast)
+
+    return {"id": broadcast.id, "status": broadcast.status.value}
+
+
+@app.patch("/broadcasts/{broadcast_id}")
+async def update_broadcast(
+    data: BroadcastCreateRequest,
+    broadcast: Broadcast = Depends(get_owned_broadcast),
+    db: AsyncSession = Depends(get_db),
+):
+    if broadcast.status not in (
+        BroadcastStatus.draft,
+        BroadcastStatus.scheduled,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Can edit only draft or scheduled broadcasts"
+        )
+
+    if broadcast.status == BroadcastStatus.scheduled and broadcast.started_at:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot edit broadcast that already started"
+        )
+
+    broadcast.text = data.text
+    broadcast.buttons = data.buttons
+    broadcast.scheduled_at = data.scheduled_at
+
+    await db.commit()
+    await db.refresh(broadcast)
+
+    return {
+        "id": broadcast.id,
+        "status": broadcast.status.value,
+        "scheduled_at": broadcast.scheduled_at,
+    }
 
 
 # ===== DELETE =====

@@ -15,3 +15,11 @@ class DelayedStates(StatesGroup):
     waiting_photo = State()
     waiting_buttons = State()
     waiting_delay = State()
+
+
+class BroadcastStates(StatesGroup):
+    waiting_text = State()
+    waiting_buttons = State()
+    waiting_when = State()
+    waiting_time = State()
+    confirm = State()

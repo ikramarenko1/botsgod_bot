@@ -17,8 +17,9 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
-from states import AddBotState, WelcomeStates, DelayedStates
+from states import AddBotState, WelcomeStates, DelayedStates, BroadcastStates
 
 load_dotenv()
 
@@ -61,15 +62,42 @@ async def backend_request(
         return response.json()
 
 
-async def safe_edit(message, text: str, reply_markup=None):
+async def safe_edit(message, text: str, reply_markup=None, parse_mode: Optional[str] = None):
     try:
-        await message.edit_text(text, reply_markup=reply_markup)
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
             return
-        await message.answer(text, reply_markup=reply_markup)
+        await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except Exception:
-        await message.answer(text, reply_markup=reply_markup)
+        await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+
+async def safe_edit_by_id(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode: Optional[str] = None):
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+async def safe_delete_message(message: Message):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+async def safe_delete_by_id(chat_id: int, message_id: int):
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
 
 
 main_reply_keyboard = ReplyKeyboardMarkup(
@@ -86,6 +114,79 @@ def main_menu_keyboard():
             [InlineKeyboardButton(text="➕ Добавить бота", callback_data="add_bot")],
         ]
     )
+
+
+UTC3_OFFSET = timedelta(hours=3)
+
+def now_utc() -> datetime:
+    return datetime.utcnow()
+
+def now_utc3() -> datetime:
+    return now_utc() + UTC3_OFFSET
+
+def utc3_to_utc(dt_utc3: datetime) -> datetime:
+    return dt_utc3 - UTC3_OFFSET
+
+def parse_utc3_input_to_utc_iso(text: str) -> str:
+    """
+    Поддержка:
+      - "Сейчас"
+      - "ЧЧ:ММ" (сегодня, если прошло - завтра)
+      - "ДД.ММ.ГГГГ ЧЧ:ММ"
+    """
+    raw = text.strip()
+    low = raw.lower()
+
+    if low in ("сейчас", "now"):
+        return now_utc().replace(microsecond=0).isoformat()
+
+    # HH:MM
+    if len(raw) == 5 and raw[2] == ":":
+        hh, mm = raw.split(":")
+        if not (hh.isdigit() and mm.isdigit()):
+            raise ValueError("bad time")
+        base = now_utc3()
+        candidate = base.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        if candidate <= base:
+            candidate = candidate + timedelta(days=1)
+        return utc3_to_utc(candidate).replace(microsecond=0).isoformat()
+
+    # DD.MM.YYYY HH:MM
+    dt_utc3 = datetime.strptime(raw, "%d.%m.%Y %H:%M").replace(second=0, microsecond=0)
+    return utc3_to_utc(dt_utc3).replace(microsecond=0).isoformat()
+
+
+def parse_utc_iso(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", ""))
+
+def utc_iso_to_utc3_human(s: Optional[str]) -> str:
+    if not s:
+        return "—"
+    dt_utc = parse_utc_iso(s)
+    dt_utc3 = dt_utc + UTC3_OFFSET
+    return dt_utc3.strftime("%d.%m.%Y %H:%M")
+
+
+def buttons_status(buttons: Optional[list]) -> str:
+    return "🟢" if buttons else "🔴"
+
+
+def status_emoji(status: str) -> str:
+    return {
+        "draft": "📝",
+        "scheduled": "⏳",
+        "sending": "📡",
+        "sent": "✅",
+        "failed": "❌",
+        "cancelled": "🛑",
+    }.get(status or "", "•")
+
+
+def short_text(s: Optional[str], n: int = 60) -> str:
+    if not s:
+        return ""
+    s = s.strip()
+    return s if len(s) <= n else s[:n] + "…"
 
 
 async def render_welcome_menu(
@@ -110,7 +211,7 @@ async def render_welcome_menu(
     )
 
     photo_status = "🟢" if welcome and welcome.get("photo_path") else "🔴"
-    buttons_status = "🟢" if welcome and welcome.get("buttons") else "🔴"
+    buttons_flag = "🟢" if welcome and welcome.get("buttons") else "🔴"
 
     text_block = (
         f"<blockquote>{welcome.get('text')}</blockquote>"
@@ -125,7 +226,7 @@ async def render_welcome_menu(
         f"{text_block}\n\n"
 
         f"📸 Фото: {photo_status}\n"
-        f"🔗 Кнопки: {buttons_status}\n\n"
+        f"🔗 Кнопки: {buttons_flag}\n\n"
 
         f"Выберите действие:"
     )
@@ -209,7 +310,7 @@ async def render_delayed_menu(
     )
 
     photo_status = "🟢" if photo_path else "🔴"
-    buttons_status = "🟢" if delayed_buttons else "🔴"
+    buttons_flag = "🟢" if delayed_buttons else "🔴"
     delay_value = f"{delay_minutes} мин" if delay_minutes else "не установлено"
     enabled_status = "🟢 Активно" if delayed_text and delay_minutes else "🔴 Не активно"
 
@@ -217,7 +318,7 @@ async def render_delayed_menu(
         f"⏳ <b>Отложенное сообщение для @{bot_username}</b>\n\n"
         f"📝 <b>Текст:</b>\n{text_block}\n\n"
         f"📸 Фото: {photo_status}\n"
-        f"🔗 Кнопки: {buttons_status}\n"
+        f"🔗 Кнопки: {buttons_flag}\n"
         f"⏳ Задержка: {delay_value}\n\n"
         f"📡 Статус: {enabled_status}\n\n"
         f"Выберите действие:"
@@ -247,6 +348,103 @@ async def render_delayed_menu(
         await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     else:
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bool = False):
+    try:
+        bots = await backend_request("GET", "/bots", owner_id)
+    except Exception:
+        await safe_edit(message, "Ошибка загрузки данных бота.")
+        return
+
+    bot_username = next((b["username"] for b in bots if str(b["id"]) == str(bot_id)), None)
+    if not bot_username:
+        await safe_edit(message, "Бот не найден.")
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика", callback_data=f"bot_{bot_id}_stats")],
+            [InlineKeyboardButton(text="📩 Сообщение", callback_data=f"bot_{bot_id}_message")],
+            [InlineKeyboardButton(text="⏳ Отложенное сообщение", callback_data=f"bot_{bot_id}_delayed")],
+            [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
+            [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
+            [InlineKeyboardButton(text="✏ Изменить название", callback_data=f"bot_{bot_id}_rename")],
+            [InlineKeyboardButton(text="⛔ Выключить бота", callback_data=f"bot_{bot_id}_disable")],
+            [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
+            [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
+            [InlineKeyboardButton(text="« Назад", callback_data="my_bots")]
+        ]
+    )
+
+    text = f"Управление ботом @{bot_username}."
+    if edit:
+        await safe_edit(message, text, reply_markup=keyboard)
+    else:
+        await message.answer(text, reply_markup=keyboard)
+
+
+async def render_bot_menu_by_id(chat_id: int, owner_id: int, bot_id: str, message_id: int):
+    try:
+        bots = await backend_request("GET", "/bots", owner_id)
+    except Exception:
+        await safe_edit_by_id(chat_id, message_id, "Ошибка загрузки данных бота.")
+        return
+
+    bot_username = next((b["username"] for b in bots if str(b["id"]) == str(bot_id)), None)
+    if not bot_username:
+        await safe_edit_by_id(chat_id, message_id, "Бот не найден.")
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика", callback_data=f"bot_{bot_id}_stats")],
+            [InlineKeyboardButton(text="📩 Сообщение", callback_data=f"bot_{bot_id}_message")],
+            [InlineKeyboardButton(text="⏳ Отложенное сообщение", callback_data=f"bot_{bot_id}_delayed")],
+            [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
+            [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
+            [InlineKeyboardButton(text="✏ Изменить название", callback_data=f"bot_{bot_id}_rename")],
+            [InlineKeyboardButton(text="⛔ Выключить бота", callback_data=f"bot_{bot_id}_disable")],
+            [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
+            [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
+            [InlineKeyboardButton(text="« Назад", callback_data="my_bots")]
+        ]
+    )
+
+    await safe_edit_by_id(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=f"Управление ботом @{bot_username}.",
+        reply_markup=keyboard
+    )
+
+
+async def broadcast_show_confirm(message: Message, state: FSMContext):
+    data = await state.get_data()
+    text = data.get("text") or ""
+    buttons = data.get("buttons")
+    scheduled_at = data.get("scheduled_at")
+    wizard_msg_id = data.get("wizard_msg_id")
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Создать", callback_data="broadcast_confirm")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")],
+        ]
+    )
+
+    content = (
+        "📢 <b>Проверка рассылки</b>\n\n"
+        f"📝 <b>Текст:</b>\n<blockquote>{text}</blockquote>\n\n"
+        f"🔗 Кнопки: {buttons_status(buttons)}\n"
+        f"⏳ Отправка: <b>{utc_iso_to_utc3_human(scheduled_at)}</b> (UTC+3)\n\n"
+        "Выберите действие:"
+    )
+
+    if wizard_msg_id:
+        await safe_edit_by_id(message.chat.id, wizard_msg_id, content, reply_markup=kb, parse_mode="HTML")
+    else:
+        await message.answer(content, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.message(CommandStart())
@@ -343,45 +541,7 @@ async def bot_manage_handler(callback):
     owner_id = callback.from_user.id
     bot_id = callback.data.split("_")[1]
 
-    try:
-        bots = await backend_request("GET", "/bots", owner_id)
-    except Exception:
-        await safe_edit(callback.message, "Ошибка загрузки данных бота.")
-        await callback.answer()
-        return
-
-    bot_username = None
-    for b in bots:
-        if str(b["id"]) == bot_id:
-            bot_username = b["username"]
-            break
-
-    if not bot_username:
-        await safe_edit(callback.message, "Бот не найден.")
-        await callback.answer()
-        return
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Статистика", callback_data=f"bot_{bot_id}_stats")],
-            [InlineKeyboardButton(text="📩 Сообщение", callback_data=f"bot_{bot_id}_message")],
-            [InlineKeyboardButton(text="⏳ Отложенное сообщение", callback_data=f"bot_{bot_id}_delayed")],
-            [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
-            [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
-            [InlineKeyboardButton(text="✏ Изменить название", callback_data=f"bot_{bot_id}_rename")],
-            [InlineKeyboardButton(text="⛔ Выключить бота", callback_data=f"bot_{bot_id}_disable")],
-            [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
-            [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
-            [InlineKeyboardButton(text="« Назад", callback_data="my_bots")]
-        ]
-    )
-
-    await safe_edit(
-        callback.message,
-        f"Управление ботом @{bot_username}.",
-        reply_markup=keyboard,
-    )
-
+    await render_bot_menu(callback.message, owner_id, bot_id, edit=True)
     await callback.answer()
 
 
@@ -546,30 +706,6 @@ async def add_bot_token_handler(message: Message, state: FSMContext):
 async def welcome_menu(callback):
     owner_id = callback.from_user.id
     bot_id = callback.data.split("_")[1]
-
-    try:
-        welcome = await backend_request(
-            "GET",
-            f"/bots/{bot_id}/welcome",
-            telegram_id=owner_id,
-        )
-    except:
-        welcome = None
-
-    bots = await backend_request("GET", "/bots", telegram_id=owner_id)
-    bot_username = next(
-        (b["username"] for b in bots if str(b["id"]) == bot_id),
-        ""
-    )
-
-    photo_status = "🟢" if welcome and welcome.get("photo_path") else "🔴"
-    buttons_status = "🟢" if welcome and welcome.get("buttons") else "🔴"
-
-    text_block = (
-        f"<blockquote>{welcome.get('text')}</blockquote>"
-        if welcome and welcome.get("text")
-        else "— не задано —"
-    )
 
     await render_welcome_menu(
         callback.message,
@@ -767,7 +903,7 @@ async def welcome_buttons_start(callback, state: FSMContext):
         "Отправьте кнопки в формате:\n\n"
         "Текст кнопки | ссылка\n"
         "Кнопка 1 | https://example.com\n\n"
-        "Или напишите <i>удалить</i> чтобы убрать все кнопки"
+        "Или отправьте <code>-</code> чтобы пропустить"
     )
 
     await callback.message.answer(text, parse_mode="HTML")
@@ -1271,6 +1407,595 @@ async def delayed_test(callback):
         )
 
     await callback.answer("✅ Тест отправлен")
+
+
+@dp.callback_query(lambda c: c.data.endswith("_create_broadcast"))
+async def broadcast_create_start(callback, state: FSMContext):
+    bot_id = callback.data.split("_")[1]
+    await state.clear()
+
+    menu_msg_id = callback.message.message_id
+
+    wizard = await callback.message.answer(
+        "📢 <b>Создание рассылки</b>\n\n"
+        "📝 Отправьте текст рассылки.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+
+    await state.update_data(
+        bot_id=bot_id,
+        menu_msg_id=menu_msg_id,
+        wizard_msg_id=wizard.message_id,
+        edit_mode=False
+    )
+    await state.set_state(BroadcastStates.waiting_text)
+    await callback.answer()
+
+
+@dp.message(BroadcastStates.waiting_text)
+async def broadcast_text_save(message: Message, state: FSMContext):
+    data = await state.get_data()
+    wizard_msg_id = data["wizard_msg_id"]
+
+    if message.text.strip() != "-":
+        await state.update_data(text=message.text)
+
+    await state.set_state(BroadcastStates.waiting_buttons)
+
+    await safe_edit_by_id(
+        chat_id=message.chat.id,
+        message_id=wizard_msg_id,
+        text=(
+            "🔗 <b>Кнопки рассылки</b>\n\n"
+            "Отправьте кнопки в формате:\n"
+            "<code>Текст | https://example.com</code>\n\n"
+            "Или отправьте <code>-</code> чтобы пропустить"
+        ),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+
+    await safe_delete_message(message)
+
+
+@dp.message(BroadcastStates.waiting_buttons)
+async def broadcast_buttons_save(message: Message, state: FSMContext):
+    data = await state.get_data()
+    wizard_msg_id = data["wizard_msg_id"]
+
+    text_input = message.text.strip()
+    buttons = None
+
+    if text_input != "-":
+        lines = [x.strip() for x in text_input.split("\n") if x.strip()]
+        parsed = []
+
+        for line in lines:
+            if "|" not in line:
+                await safe_edit_by_id(
+                    message.chat.id, wizard_msg_id,
+                    "❌ <b>Неверный формат</b>\n\n"
+                    "Используйте:\n<code>Текст | https://example.com</code>",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")]
+                    ]),
+                    parse_mode="HTML"
+                )
+                await safe_delete_message(message)
+                return
+
+            left, right = [x.strip() for x in line.split("|", 1)]
+            if not left or not right.startswith("http"):
+                await safe_edit_by_id(
+                    message.chat.id, wizard_msg_id,
+                    "❌ <b>Проверьте текст и ссылку</b>\n\n"
+                    "Ссылка должна начинаться с <code>http</code>.\n"
+                    "Пример:\n<code>Кнопка | https://example.com</code>",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")]
+                    ]),
+                    parse_mode="HTML"
+                )
+                await safe_delete_message(message)
+                return
+
+            parsed.append({"text": left, "url": right})
+
+        buttons = parsed
+
+    await state.update_data(buttons=buttons)
+    await state.set_state(BroadcastStates.waiting_when)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Сейчас", callback_data="broadcast_when_now")],
+            [InlineKeyboardButton(text="⏳ Указать время", callback_data="broadcast_when_time")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")],
+        ]
+    )
+
+    await safe_edit_by_id(
+        chat_id=message.chat.id,
+        message_id=wizard_msg_id,
+        text="⏳ <b>Время отправки</b>\n\nВыберите действие:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+    await safe_delete_message(message)
+
+
+@dp.callback_query(lambda c: c.data == "broadcast_cancel")
+async def broadcast_cancel(callback, state: FSMContext):
+    data = await state.get_data()
+
+    bot_id = data.get("bot_id")
+    menu_msg_id = data.get("menu_msg_id")
+    wizard_msg_id = data.get("wizard_msg_id")
+
+    chat_id = callback.message.chat.id
+    owner_id = callback.from_user.id
+
+    if wizard_msg_id:
+        await safe_delete_by_id(chat_id, wizard_msg_id)
+
+    await state.clear()
+    await callback.answer("Создание рассылки отменено.")
+
+    if bot_id and menu_msg_id:
+        await render_bot_menu_by_id(chat_id, owner_id, bot_id, menu_msg_id)
+    else:
+        await safe_edit(callback.message, "Главное меню:", reply_markup=main_menu_keyboard())
+
+
+@dp.callback_query(lambda c: c.data == "broadcast_when_now")
+async def broadcast_when_now(callback, state: FSMContext):
+    await state.update_data(scheduled_at=parse_utc3_input_to_utc_iso("сейчас"))
+    await state.set_state(BroadcastStates.confirm)
+    await broadcast_show_confirm(callback.message, state)
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "broadcast_when_time")
+async def broadcast_when_time(callback, state: FSMContext):
+    data = await state.get_data()
+    wizard_msg_id = data["wizard_msg_id"]
+
+    await state.set_state(BroadcastStates.waiting_time)
+
+    await safe_edit_by_id(
+        chat_id=callback.message.chat.id,
+        message_id=wizard_msg_id,
+        text=(
+            "⏳ <b>Введите время (UTC+3)</b>\n\n"
+            "Форматы:\n"
+            "• <code>ЧЧ:ММ</code>\n"
+            "• <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
+            "Пример: <code>19:30</code>"
+        ),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+@dp.message(BroadcastStates.waiting_time)
+async def broadcast_time_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    wizard_msg_id = data["wizard_msg_id"]
+
+    try:
+        scheduled_at = parse_utc3_input_to_utc_iso(message.text)
+    except Exception:
+        await safe_edit_by_id(
+            message.chat.id, wizard_msg_id,
+            "❌ <b>Неверный формат времени</b>\n\n"
+            "Форматы:\n"
+            "• <code>ЧЧ:ММ</code>\n"
+            "• <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
+            "Пример: <code>19:30</code>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")]
+            ]),
+            parse_mode="HTML"
+        )
+        await safe_delete_message(message)
+        return
+
+    await state.update_data(scheduled_at=scheduled_at)
+    await state.set_state(BroadcastStates.confirm)
+
+    await broadcast_show_confirm(message, state)
+    await safe_delete_message(message)
+
+
+@dp.callback_query(lambda c: c.data == "broadcast_confirm")
+async def broadcast_confirm(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    data = await state.get_data()
+
+    bot_id = data.get("bot_id")
+    text = data.get("text")
+    buttons = data.get("buttons")
+    scheduled_at = data.get("scheduled_at")
+
+    if not bot_id or not text or not scheduled_at:
+        await callback.answer("Данные потерялись", show_alert=True)
+        await state.clear()
+        return
+
+    try:
+        created = await backend_request(
+            "POST",
+            f"/bots/{bot_id}/broadcasts",
+            telegram_id=owner_id,
+            json={
+                "region": "default",
+                "text": text,
+                "buttons": buttons,
+                "scheduled_at": scheduled_at,
+            },
+            with_api_key=True,
+        )
+    except Exception:
+        await callback.answer("❌ Ошибка создания", show_alert=True)
+        return
+
+
+    broadcast_id = created.get("id")
+    status = created.get("status")
+
+    buttons = []
+
+    if status == "draft":
+        buttons.append([
+            InlineKeyboardButton(
+                text="🧪 Отправить сейчас",
+                callback_data=f"broadcast_{bot_id}_sendnow_{broadcast_id}"
+            )
+        ])
+
+    buttons += [
+        [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}")]
+    ]
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    wizard_msg_id = data.get("wizard_msg_id")
+
+    content = (
+        "✅ <b>Рассылка создана</b>\n\n"
+        f"🆔 ID: <code>{broadcast_id}</code>\n"
+        f"📡 Статус: <b>{status}</b>\n"
+        f"⏳ Отправка: <b>{utc_iso_to_utc3_human(scheduled_at)}</b> (UTC+3)\n\n"
+    )
+
+    await safe_edit_by_id(
+        chat_id=callback.message.chat.id,
+        message_id=wizard_msg_id,
+        text=content,
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+    await state.clear()
+    await callback.answer("✅ Готово")
+
+
+@dp.callback_query(lambda c: c.data.endswith("_scheduled_broadcasts"))
+async def broadcasts_list(callback):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    try:
+        broadcasts = await backend_request(
+            "GET",
+            f"/bots/{bot_id}/broadcasts",
+            telegram_id=owner_id,
+        )
+        bots = await backend_request("GET", "/bots", telegram_id=owner_id)
+    except Exception:
+        await safe_edit(callback.message, "❌ Ошибка загрузки рассылок.")
+        await callback.answer()
+        return
+
+    bot_username = next((b["username"] for b in bots if str(b["id"]) == bot_id), "")
+
+    broadcasts = [
+        b for b in broadcasts
+        if b.get("status") in ("draft", "scheduled", "sending")
+    ]
+
+    broadcasts = sorted(
+        broadcasts,
+        key=lambda x: x.get("id", 0),
+        reverse=True
+    )[:15]
+
+    if not broadcasts:
+        text = (
+            f"📢 <b>Рассылки бота @{bot_username}</b>\n\n"
+            "— рассылок нет —"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}")],
+        ])
+        await safe_edit(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+        return
+
+    lines = []
+    rows = []
+    for br in broadcasts:
+        br_id = br.get("id")
+        st = br.get("status")
+        sch3 = utc_iso_to_utc3_human(br.get("scheduled_at"))
+
+        lines.append(
+            f"{status_emoji(st)} <b>#{br_id}</b> — {st} — "
+            f"<code>{sch3}</code> — {short_text(br.get('text'))}"
+        )
+        rows.append([InlineKeyboardButton(
+            text=f"{status_emoji(st)} #{br_id} ({st})",
+            callback_data=f"broadcast_{bot_id}_open_{br_id}"
+        )])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
+        *rows,
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}")],
+    ])
+
+    text = (
+        f"📢 <b>Рассылки бота @{bot_username}</b>\n\n" +
+        "\n".join(lines)
+    )
+
+    await safe_edit(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("broadcast_") and "_open_" in c.data)
+async def broadcast_open(callback):
+    owner_id = callback.from_user.id
+    parts = callback.data.split("_")
+    bot_id = parts[1]
+    broadcast_id = int(parts[-1])
+
+    try:
+        broadcasts = await backend_request("GET", f"/bots/{bot_id}/broadcasts", telegram_id=owner_id)
+        br = next((x for x in broadcasts if int(x.get("id")) == broadcast_id), None)
+    except Exception:
+        await callback.answer("❌ Ошибка загрузки", show_alert=True)
+        return
+
+    if not br:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+
+    st = br.get("status")
+    sch3 = utc_iso_to_utc3_human(br.get("scheduled_at"))
+
+    keyboard_rows = []
+
+    if st in ("draft", "scheduled"):
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text="✏️ Редактировать",
+                callback_data=f"broadcast_{bot_id}_edit_{broadcast_id}"
+            )
+        ])
+
+    if st == "draft":
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text="🧪 Отправить сейчас",
+                callback_data=f"broadcast_{bot_id}_sendnow_{broadcast_id}"
+            )
+        ])
+
+    keyboard_rows.append([
+        InlineKeyboardButton(
+            text="🗑 Удалить",
+            callback_data=f"broadcast_{bot_id}_delete_{broadcast_id}"
+        )
+    ])
+
+    keyboard_rows.append([
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=f"bot_{bot_id}_scheduled_broadcasts"
+        )
+    ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+    await safe_edit(
+        callback.message,
+        "📨 <b>Рассылка</b>\n\n"
+        f"🆔 ID: <code>{broadcast_id}</code>\n"
+        f"📡 Статус: <b>{st}</b>\n"
+        f"⏳ Отправка: <b>{sch3}</b> (UTC+3)\n"
+        f"🔗 Кнопки: {buttons_status(br.get('buttons'))}\n\n"
+        f"📝 <b>Текст:</b>\n<blockquote>{br.get('text') or ''}</blockquote>",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("broadcast_") and "_edit_" in c.data)
+async def broadcast_edit_start(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    parts = callback.data.split("_")
+    bot_id = parts[1]
+    broadcast_id = int(parts[-1])
+
+    try:
+        broadcasts = await backend_request(
+            "GET",
+            f"/bots/{bot_id}/broadcasts",
+            telegram_id=owner_id,
+        )
+        br = next((x for x in broadcasts if int(x.get("id")) == broadcast_id), None)
+    except Exception:
+        await callback.answer("Ошибка загрузки", show_alert=True)
+        return
+
+    if not br:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+
+    await state.clear()
+
+    wizard_msg_id = callback.message.message_id
+
+    await state.update_data(
+        bot_id=bot_id,
+        broadcast_id=broadcast_id,
+        wizard_msg_id=wizard_msg_id,
+        edit_mode=True,
+        text=br.get("text"),
+        buttons=br.get("buttons"),
+        scheduled_at=br.get("scheduled_at")
+    )
+
+    await state.set_state(BroadcastStates.waiting_text)
+
+    await bot.edit_message_text(
+        chat_id=callback.message.chat.id,
+        message_id=wizard_msg_id,
+        text=(
+            "✏️ <b>Редактирование рассылки</b>\n\n"
+            "Отправьте новый текст.\n"
+            "Или отправьте <code>-</code> чтобы оставить без изменений."
+        ),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("broadcast_") and "_sendnow_" in c.data)
+async def broadcast_send_now(callback):
+    owner_id = callback.from_user.id
+    parts = callback.data.split("_")
+    bot_id = parts[1]
+    broadcast_id = int(parts[-1])
+
+    try:
+        await backend_request(
+            "POST",
+            f"/broadcasts/{broadcast_id}/send-now",
+            telegram_id=owner_id,
+            with_api_key=True
+        )
+    except Exception:
+        await callback.answer("❌ Ошибка отправки", show_alert=True)
+        return
+
+    try:
+        broadcasts = await backend_request(
+            "GET",
+            f"/bots/{bot_id}/broadcasts",
+            telegram_id=owner_id,
+        )
+        br = next((x for x in broadcasts if int(x.get("id")) == broadcast_id), None)
+    except Exception:
+        await callback.answer("Отправлено, но не удалось обновить экран")
+        return
+
+    if not br:
+        await callback.answer("Отправлено")
+        return
+
+    st = br.get("status")
+    sch3 = utc_iso_to_utc3_human(br.get("scheduled_at"))
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"broadcast_{bot_id}_open_{broadcast_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
+    ])
+
+    await safe_edit(
+        callback.message,
+        "📨 <b>Рассылка</b>\n\n"
+        f"🆔 ID: <code>{broadcast_id}</code>\n"
+        f"📡 Статус: <b>{st}</b>\n"
+        f"⏳ Отправка: <b>{sch3}</b> (UTC+3)\n"
+        f"🔗 Кнопки: {buttons_status(br.get('buttons'))}\n\n"
+        f"📝 <b>Текст:</b>\n<blockquote>{br.get('text') or ''}</blockquote>",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+    await callback.answer("✅ Отправлено")
+
+
+@dp.callback_query(lambda c: c.data.startswith("broadcast_") and "_delete_" in c.data and "_delete_yes_" not in c.data)
+async def broadcast_delete_confirm(callback, state: FSMContext):
+    parts = callback.data.split("_")
+    bot_id = parts[1]
+    broadcast_id = int(parts[-1])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"broadcast_{bot_id}_delete_yes_{broadcast_id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"broadcast_{bot_id}_open_{broadcast_id}")],
+    ])
+
+    await safe_edit(
+        callback.message,
+        "🗑 <b>Удалить рассылку?</b>\n\n"
+        "Она будет переведена в статус <b>cancelled</b>.",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("broadcast_") and "_delete_yes_" in c.data)
+async def broadcast_delete_yes(callback):
+    owner_id = callback.from_user.id
+    parts = callback.data.split("_")
+    bot_id = parts[1]
+    broadcast_id = int(parts[-1])
+
+    try:
+        await backend_request(
+            "PATCH",
+            f"/broadcasts/{broadcast_id}/cancel",
+            telegram_id=owner_id,
+            with_api_key=True
+        )
+    except Exception:
+        await callback.answer("❌ Ошибка удаления", show_alert=True)
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗂 К списку рассылок", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
+        [InlineKeyboardButton(text="⬅️ К боту", callback_data=f"bot_{bot_id}")],
+    ])
+
+    await safe_edit(
+        callback.message,
+        "🗑 <b>Рассылка удалена</b>\nСтатус: <b>cancelled</b>",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    await callback.answer("✅ Удалено")
 
 
 if __name__ == "__main__":

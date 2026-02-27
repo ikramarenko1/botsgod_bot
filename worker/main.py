@@ -6,38 +6,81 @@ import os
 import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 load_dotenv()
+
 
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
 BACKEND_URL = os.getenv("BACKEND_URL")
 LOG_FILE = os.getenv("WORKER_LOG_FILE")
+CONTROLLER_BOT_TOKEN = os.getenv("CONTROLLER_BOT_TOKEN")
 
-HEADERS = {
-    "X-API-KEY": INTERNAL_API_KEY
-}
+HEADERS = {"X-API-KEY": INTERNAL_API_KEY}
 
 logger = logging.getLogger("stagecontrol_worker")
 logger.setLevel(logging.INFO)
 
 if LOG_FILE:
-    handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=10_000_000,
-        backupCount=3
-    )
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s"
-    )
+    handler = RotatingFileHandler(LOG_FILE, maxBytes=10_000_000, backupCount=3)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 else:
     logging.basicConfig(level=logging.INFO)
 
-
 HEALTHCHECK_INTERVAL_SEC = 60
-REPLACEMENT_INTERVAL_SEC = 15
+REPLACEMENT_INTERVAL_SEC = 120
 WORKER_LOOP_DELAY = 10
+
+
+async def notify_owner(owner_id: int, text: str):
+    if not CONTROLLER_BOT_TOKEN:
+        return
+
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{CONTROLLER_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": owner_id,
+                    "text": text,
+                    "parse_mode": "HTML"
+                },
+                timeout=10,
+            )
+    except Exception as e:
+        logger.error(f"[worker] notify error: {e}")
+
+
+def is_valid_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except Exception:
+        return False
+
+
+def build_reply_markup(buttons):
+    if not buttons:
+        return None
+
+    keyboard = []
+
+    for b in buttons:
+        if not is_valid_url(b["url"]):
+            logger.warning(f"[worker] invalid URL skipped: {b['url']}")
+            continue
+
+        keyboard.append([{
+            "text": b["text"],
+            "url": b["url"]
+        }])
+
+    if not keyboard:
+        return None
+
+    return {"inline_keyboard": keyboard}
 
 
 async def call_healthcheck_all(client: httpx.AsyncClient):
@@ -67,7 +110,6 @@ async def call_replacement(client: httpx.AsyncClient):
 
 
 async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
-
     broadcast_id = broadcast["id"]
 
     try:
@@ -81,6 +123,11 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
         logger.info(f"[worker] broadcast {broadcast_id} already locked")
         return
 
+    await notify_owner(
+        broadcast["owner_id"],
+        f"🚀 <b>Рассылка #{broadcast_id} началась</b>"
+    )
+
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast_id}/stats",
         json={"started_at": True},
@@ -90,7 +137,6 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
     users_resp = await client.get(
         f"{BACKEND_URL}/system/bots/{broadcast['bot_id']}/users",
         headers=HEADERS,
-        timeout=30,
     )
     users_resp.raise_for_status()
     users = users_resp.json()
@@ -99,6 +145,8 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
     sent = 0
     failed = 0
 
+    reply_markup = build_reply_markup(broadcast.get("buttons"))
+
     for user in users:
         try:
             payload = {
@@ -106,13 +154,8 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
                 "text": broadcast["text"],
             }
 
-            if broadcast["buttons"]:
-                payload["reply_markup"] = {
-                    "inline_keyboard": [
-                        [{"text": b["text"], "url": b["url"]}]
-                        for b in broadcast["buttons"]
-                    ]
-                }
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
 
             tg_resp = await client.post(
                 f"https://api.telegram.org/bot{broadcast['token']}/sendMessage",
@@ -120,22 +163,19 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
                 timeout=10,
             )
 
-            if tg_resp.status_code == 429:
-                data = tg_resp.json()
-                retry_after = data.get("parameters", {}).get("retry_after", 1)
-                logger.warning(f"[worker] 429 flood. Sleeping {retry_after}s")
-                await asyncio.sleep(retry_after)
-                continue
-
             if tg_resp.status_code == 200:
                 sent += 1
             else:
                 failed += 1
+                logger.warning(
+                    f"[worker] send error {tg_resp.status_code}: {tg_resp.text}"
+                )
 
             await asyncio.sleep(0.05)
 
-        except Exception:
+        except Exception as e:
             failed += 1
+            logger.error(f"[worker] send exception: {e}")
 
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast_id}/stats",
@@ -154,6 +194,15 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
         f"{BACKEND_URL}/broadcasts/{broadcast_id}/status",
         json={"status": final_status},
         headers=HEADERS,
+    )
+
+    await notify_owner(
+        broadcast["owner_id"],
+        f"<b>Рассылка #{broadcast_id} завершена</b>\n\n"
+        f"👥 Всего: {total}\n"
+        f"✅ Отправлено: {sent}\n"
+        f"❌ Ошибок: {failed}\n"
+        f"📡 Статус: {final_status}"
     )
 
     logger.info(

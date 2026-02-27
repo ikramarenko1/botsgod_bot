@@ -23,3 +23,9 @@ class BroadcastStates(StatesGroup):
     waiting_when = State()
     waiting_time = State()
     confirm = State()
+
+
+class RenameStates(StatesGroup):
+    choose_type = State()
+    choose_regions = State()
+    waiting_new_name = State()

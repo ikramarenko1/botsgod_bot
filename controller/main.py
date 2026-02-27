@@ -19,7 +19,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-from states import AddBotState, WelcomeStates, DelayedStates, BroadcastStates
+from states import AddBotState, WelcomeStates, DelayedStates, BroadcastStates, RenameStates
 
 load_dotenv()
 
@@ -157,7 +157,11 @@ def parse_utc3_input_to_utc_iso(text: str) -> str:
 
 
 def parse_utc_iso(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", ""))
+    s = (s or "").replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(tz=None).replace(tzinfo=None)
+    return dt
 
 def utc_iso_to_utc3_human(s: Optional[str]) -> str:
     if not s:
@@ -311,8 +315,8 @@ async def render_delayed_menu(
 
     photo_status = "🟢" if photo_path else "🔴"
     buttons_flag = "🟢" if delayed_buttons else "🔴"
-    delay_value = f"{delay_minutes} мин" if delay_minutes else "не установлено"
-    enabled_status = "🟢 Активно" if delayed_text and delay_minutes else "🔴 Не активно"
+    delay_value = f"{delay_minutes} мин" if delay_minutes is not None else "не установлено"
+    enabled_status = "🟢 Активно" if delayed_text and delay_minutes is not None else "🔴 Не активно"
 
     text = (
         f"⏳ <b>Отложенное сообщение для @{bot_username}</b>\n\n"
@@ -352,7 +356,7 @@ async def render_delayed_menu(
 
 async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bool = False):
     try:
-        bots = await backend_request("GET", "/bots", owner_id)
+        bots = await backend_request("GET", "/bots", telegram_id=owner_id)
     except Exception:
         await safe_edit(message, "Ошибка загрузки данных бота.")
         return
@@ -386,7 +390,7 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
 
 async def render_bot_menu_by_id(chat_id: int, owner_id: int, bot_id: str, message_id: int):
     try:
-        bots = await backend_request("GET", "/bots", owner_id)
+        bots = await backend_request("GET", "/bots", telegram_id=owner_id)
     except Exception:
         await safe_edit_by_id(chat_id, message_id, "Ошибка загрузки данных бота.")
         return
@@ -445,6 +449,105 @@ async def broadcast_show_confirm(message: Message, state: FSMContext):
         await safe_edit_by_id(message.chat.id, wizard_msg_id, content, reply_markup=kb, parse_mode="HTML")
     else:
         await message.answer(content, reply_markup=kb, parse_mode="HTML")
+
+
+LANG_REGIONS = [
+    # СНГ
+    {"code": "ru", "title": "Русский", "flag": "🇷🇺", "group": "cis"},
+    {"code": "uk", "title": "Українська", "flag": "🇺🇦", "group": "cis"},
+    {"code": "kk", "title": "Қазақша", "flag": "🇰🇿", "group": "cis"},
+    {"code": "az", "title": "Azərbaycanca", "flag": "🇦🇿", "group": "cis"},
+    {"code": "hy", "title": "Հայերեն", "flag": "🇦🇲", "group": "cis"},
+    {"code": "ka", "title": "ქართული", "flag": "🇬🇪", "group": "cis"},
+    {"code": "uz", "title": "Oʻzbek", "flag": "🇺🇿", "group": "cis"},
+    {"code": "be", "title": "Беларуская", "flag": "🇧🇾", "group": "cis"},
+    {"code": "tg", "title": "Тоҷикӣ", "flag": "🇹🇯", "group": "cis"},
+
+    # Запад
+    {"code": "en", "title": "English", "flag": "🇺🇸", "group": "west"},
+    {"code": "de", "title": "Deutsch", "flag": "🇩🇪", "group": "west"},
+    {"code": "fr", "title": "Français", "flag": "🇫🇷", "group": "west"},
+    {"code": "es", "title": "Español", "flag": "🇪🇸", "group": "west"},
+    {"code": "it", "title": "Italiano", "flag": "🇮🇹", "group": "west"},
+    {"code": "pt", "title": "Português", "flag": "🇵🇹", "group": "west"},
+    {"code": "pl", "title": "Polski", "flag": "🇵🇱", "group": "west"},
+    {"code": "nl", "title": "Nederlands", "flag": "🇳🇱", "group": "west"},
+    {"code": "cs", "title": "Čeština", "flag": "🇨🇿", "group": "west"},
+    {"code": "ro", "title": "Română", "flag": "🇷🇴", "group": "west"},
+    {"code": "el", "title": "Ελληνικά", "flag": "🇬🇷", "group": "west"},
+    {"code": "sv", "title": "Svenska", "flag": "🇸🇪", "group": "west"},
+    {"code": "da", "title": "Dansk", "flag": "🇩🇰", "group": "west"},
+    {"code": "no", "title": "Norsk", "flag": "🇳🇴", "group": "west"},
+    {"code": "fi", "title": "Suomi", "flag": "🇫🇮", "group": "west"},
+
+    # Азия
+    {"code": "tr", "title": "Türkçe", "flag": "🇹🇷", "group": "asia"},
+    {"code": "ar", "title": "العربية", "flag": "🇸🇦", "group": "asia"},
+    {"code": "he", "title": "עברית", "flag": "🇮🇱", "group": "asia"},
+    {"code": "hi", "title": "हिन्दी", "flag": "🇮🇳", "group": "asia"},
+    {"code": "th", "title": "ไทย", "flag": "🇹🇭", "group": "asia"},
+    {"code": "vi", "title": "Tiếng Việt", "flag": "🇻🇳", "group": "asia"},
+    {"code": "id", "title": "Bahasa Indonesia", "flag": "🇮🇩", "group": "asia"},
+    {"code": "ms", "title": "Bahasa Melayu", "flag": "🇲🇾", "group": "asia"},
+    {"code": "zh", "title": "中文", "flag": "🇨🇳", "group": "asia"},
+    {"code": "ja", "title": "日本語", "flag": "🇯🇵", "group": "asia"},
+    {"code": "ko", "title": "한국어", "flag": "🇰🇷", "group": "asia"},
+]
+
+REGION_BY_CODE = {x["code"]: x for x in LANG_REGIONS}
+
+
+def _render_selected_regions(selected_codes: list[str]) -> str:
+    if not selected_codes:
+        return "Вы пока ничего не выбрали."
+    lines = "\n".join([f"{REGION_BY_CODE[c]['flag']} {REGION_BY_CODE[c]['title']}" for c in selected_codes if c in REGION_BY_CODE])
+    return f"Выбрано ({len(selected_codes)}):\n{lines}"
+
+
+def _regions_keyboard(bot_id: str, selected: set[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text="СНГ", callback_data=f"rename_{bot_id}_geo_group_cis"),
+            InlineKeyboardButton(text="Запад", callback_data=f"rename_{bot_id}_geo_group_west"),
+            InlineKeyboardButton(text="Азия", callback_data=f"rename_{bot_id}_geo_group_asia"),
+        ],
+        [InlineKeyboardButton(text="🌍 На все регионы", callback_data=f"rename_{bot_id}_geo_all")],
+    ]
+
+    grid = []
+    for item in LANG_REGIONS:
+        code = item["code"]
+        flag = item["flag"]
+        is_on = code in selected
+        txt = f"✅ {flag}" if is_on else flag
+        grid.append(InlineKeyboardButton(text=txt, callback_data=f"rename_{bot_id}_geo_t_{code}"))
+
+    for i in range(0, len(grid), 3):
+        rows.append(grid[i:i+3])
+
+    rows.append([
+        InlineKeyboardButton(text="✅ Готово", callback_data=f"rename_{bot_id}_geo_done"),
+        InlineKeyboardButton(text="♻️ Сброс", callback_data=f"rename_{bot_id}_geo_reset"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data=f"rename_{bot_id}_geo_back"),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _get_bot_username(owner_id: int, bot_id: str) -> str:
+    bots = await backend_request("GET", "/bots", telegram_id=owner_id)
+    return next((b["username"] for b in bots if str(b["id"]) == str(bot_id)), "")
+
+
+async def _get_configs_map(owner_id: int, bot_id: str) -> dict[str, dict]:
+    configs = await backend_request("GET", f"/bots/{bot_id}/configs", telegram_id=owner_id)
+    # ожидаем list[{"region":..., "name":..., "description":...}]
+    out = {}
+    for c in configs:
+        out[c.get("region")] = c
+    return out
 
 
 @dp.message(CommandStart())
@@ -918,6 +1021,12 @@ async def welcome_buttons_save(message: Message, state: FSMContext):
 
     text_input = message.text.strip()
 
+    if text_input == "-":
+        await message.answer("Ок, оставляем кнопки без изменений.")
+        await state.clear()
+        await render_welcome_menu(message, owner_id, bot_id)
+        return
+
     if text_input.lower() == "удалить":
         try:
             current = await backend_request(
@@ -1052,7 +1161,7 @@ async def welcome_reset(callback):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data.endswith("_delayed"))
+@dp.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_delayed"))
 async def delayed_menu(callback):
     bot_id = callback.data.split("_")[1]
     owner_id = callback.from_user.id
@@ -1263,7 +1372,7 @@ async def delayed_buttons_save(message: Message, state: FSMContext):
             await message.answer("Неверный формат.")
             return
 
-        text, url = [x.strip() for x in line.split("|")]
+        text, url = [x.strip() for x in line.split("|", 1)]
 
         if not url.startswith("http"):
             await message.answer("Ссылка должна начинаться с http")
@@ -1996,6 +2105,378 @@ async def broadcast_delete_yes(callback):
         parse_mode="HTML"
     )
     await callback.answer("✅ Удалено")
+
+
+@dp.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_rename"))
+async def rename_start(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+    bot_username = await _get_bot_username(owner_id, bot_id)
+
+    await state.clear()
+    await state.set_state(RenameStates.choose_type)
+    await state.update_data(bot_id=bot_id)
+
+    text = (
+        f"🏷 <b>Изменение названия бота @{bot_username}</b>\n\n"
+        "Выберите тип изменения названия:"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏷 Основное название", callback_data=f"rename_{bot_id}_type_main")],
+        [InlineKeyboardButton(text="🌍 Мульти-гео", callback_data=f"rename_{bot_id}_type_geo")],
+        [InlineKeyboardButton(text="« Назад", callback_data=f"bot_{bot_id}")],
+    ])
+
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("rename_") and "_type_main" in c.data)
+async def rename_main_info(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+    bot_username = await _get_bot_username(owner_id, bot_id)
+
+    await state.set_state(RenameStates.waiting_new_name)
+    await state.update_data(mode="default", selected_regions=None)
+
+    text = (
+        f"🏷 <b>Изменение основного названия бота @{bot_username}</b>\n\n"
+        f"🤖 Бот: @{bot_username}\n"
+        "🌍 Тип: Основное название (для всех пользователей)\n\n"
+        "Основное название — это те ключевые слова, по которым люди смогут находить бота в поиске.\n\n"
+        "Введите новое название:"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="« Назад", callback_data=f"bot_{bot_id}_rename")],
+        [InlineKeyboardButton(text="« К боту", callback_data=f"bot_{bot_id}")],
+    ])
+
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("rename_") and "_type_geo" in c.data)
+async def rename_geo_start(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+    bot_username = await _get_bot_username(owner_id, bot_id)
+
+    await state.set_state(RenameStates.choose_regions)
+    await state.update_data(mode="multi", selected_regions=[])
+
+    text = (
+        f"🏷 <b>Изменение названия бота @{bot_username}</b>\n\n"
+        "Выберите регионы для настройки названия или используйте быстрые группы.\n\n"
+        f"{_render_selected_regions([])}"
+    )
+
+    kb = _regions_keyboard(bot_id, set())
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("rename_") and "_geo_t_" in c.data)
+async def rename_geo_toggle(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    parts = callback.data.split("_")
+    bot_id = parts[1]
+    code = parts[-1]
+
+    data = await state.get_data()
+    selected = set(data.get("selected_regions") or [])
+
+    if code in selected:
+        selected.remove(code)
+    else:
+        selected.add(code)
+
+    selected_list = sorted(selected)
+    await state.update_data(selected_regions=selected_list)
+
+    bot_username = await _get_bot_username(owner_id, bot_id)
+
+    text = (
+        f"🏷 <b>Изменение названия бота @{bot_username}</b>\n\n"
+        "Выберите регионы для настройки названия или используйте быстрые группы.\n\n"
+        f"{_render_selected_regions(selected_list)}"
+    )
+
+    kb = _regions_keyboard(bot_id, selected)
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("rename_") and "_geo_group_" in c.data)
+async def rename_geo_group(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    parts = callback.data.split("_")
+    bot_id = parts[1]
+    group = parts[-1]  # cis / west / asia
+
+    group_codes = [x["code"] for x in LANG_REGIONS if x["group"] == group]
+
+    data = await state.get_data()
+    selected = set(data.get("selected_regions") or [])
+
+    # toggle group: если все уже выбраны — снять, иначе добавить
+    if all(c in selected for c in group_codes):
+        for c in group_codes:
+            selected.discard(c)
+    else:
+        for c in group_codes:
+            selected.add(c)
+
+    selected_list = sorted(selected)
+    await state.update_data(selected_regions=selected_list)
+
+    bot_username = await _get_bot_username(owner_id, bot_id)
+    text = (
+        f"🏷 <b>Изменение названия бота @{bot_username}</b>\n\n"
+        "Выберите регионы для настройки названия или используйте быстрые группы.\n\n"
+        f"{_render_selected_regions(selected_list)}"
+    )
+
+    kb = _regions_keyboard(bot_id, selected)
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("rename_") and c.data.endswith("_geo_all"))
+async def rename_geo_all(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    all_codes = sorted([x["code"] for x in LANG_REGIONS])
+    await state.update_data(selected_regions=all_codes)
+
+    bot_username = await _get_bot_username(owner_id, bot_id)
+    text = (
+        f"🏷 <b>Изменение названия бота @{bot_username}</b>\n\n"
+        "Выберите регионы для настройки названия или используйте быстрые группы.\n\n"
+        f"{_render_selected_regions(all_codes)}"
+    )
+    kb = _regions_keyboard(bot_id, set(all_codes))
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("rename_") and c.data.endswith("_geo_reset"))
+async def rename_geo_reset(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    await state.update_data(selected_regions=[])
+
+    bot_username = await _get_bot_username(owner_id, bot_id)
+    text = (
+        f"🏷 <b>Изменение названия бота @{bot_username}</b>\n\n"
+        "Выберите регионы для настройки названия или используйте быстрые группы.\n\n"
+        f"{_render_selected_regions([])}"
+    )
+    kb = _regions_keyboard(bot_id, set())
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("rename_") and c.data.endswith("_geo_back"))
+async def rename_geo_back(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+    bot_username = await _get_bot_username(owner_id, bot_id)
+
+    await state.clear()
+    await state.set_state(RenameStates.choose_type)
+    await state.update_data(bot_id=bot_id)
+
+    text = (
+        f"🏷 <b>Изменение названия бота @{bot_username}</b>\n\n"
+        "Выберите тип изменения названия:"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏷 Основное название", callback_data=f"rename_{bot_id}_type_main")],
+        [InlineKeyboardButton(text="🌍 Мульти-гео", callback_data=f"rename_{bot_id}_type_geo")],
+        [InlineKeyboardButton(text="« Назад", callback_data=f"bot_{bot_id}")],
+    ])
+
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("rename_") and c.data.endswith("_geo_done"))
+async def rename_geo_done(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    data = await state.get_data()
+    selected = data.get("selected_regions") or []
+    if not selected:
+        await callback.answer("Выберите хотя бы 1 регион", show_alert=True)
+        return
+
+    bot_username = await _get_bot_username(owner_id, bot_id)
+
+    regions_lines = "\n".join([f"{REGION_BY_CODE[c]['flag']} {REGION_BY_CODE[c]['title']}" for c in selected if c in REGION_BY_CODE])
+
+    text = (
+        f"🏷 <b>Изменение названия бота @{bot_username}</b>\n\n"
+        f"🤖 Бот: @{bot_username}\n"
+        f"🌍 Выбрано регионов: {len(selected)}\n"
+        f"{regions_lines}\n\n"
+        "Введите новое название, которое будет установлено для выбранных регионов."
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"rename_{bot_id}_type_geo")],
+        [InlineKeyboardButton(text="« К боту", callback_data=f"bot_{bot_id}")],
+    ])
+
+    await state.set_state(RenameStates.waiting_new_name)
+    await state.update_data(mode="multi")
+
+    await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.message(RenameStates.waiting_new_name)
+async def rename_save_name(message: Message, state: FSMContext):
+    owner_id = message.from_user.id
+    data = await state.get_data()
+    bot_id = data.get("bot_id")
+
+    if not bot_id:
+        await message.answer("❌ Ошибка: bot_id потерялся.")
+        await state.clear()
+        return
+
+    new_name = (message.text or "").strip()
+    if not new_name:
+        await message.answer("Введите название текстом.")
+        return
+
+    mode = data.get("mode", "default")
+
+    # Берём текущие конфиги, чтобы сохранить description
+    try:
+        configs = await _get_configs_map(owner_id, bot_id)
+    except Exception:
+        configs = {}
+
+    default_desc = (configs.get("default") or {}).get("description", "") or ""
+
+    bot_username = await _get_bot_username(owner_id, bot_id)
+
+    # Удалим пользовательское сообщение (как ты делал в wizard рассылке)
+    await safe_delete_message(message)
+
+    if mode == "default":
+        # upsert default
+        try:
+            await backend_request(
+                "POST",
+                f"/bots/{bot_id}/configs",
+                telegram_id=owner_id,
+                json={"region": "default", "name": new_name, "description": default_desc},
+                with_api_key=True,
+            )
+            # apply default
+            await backend_request(
+                "POST",
+                f"/bots/{bot_id}/configs/apply",
+                telegram_id=owner_id,
+                json={"region": "default"},
+                with_api_key=True,
+            )
+        except Exception:
+            await message.answer("❌ Не удалось обновить название (backend/telegram ошибка).")
+            await state.clear()
+            return
+
+        text = (
+            "✅ <b>Основное название бота обновлено!</b>\n\n"
+            f"🤖 Бот: @{bot_username}\n"
+            "🌍 Тип: Основное название\n"
+            f"🏷 <b>Новое название:</b> {new_name}\n\n"
+            "Название будет отображаться для всех пользователей по умолчанию."
+        )
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Изменить другой", callback_data=f"bot_{bot_id}_rename")],
+            [InlineKeyboardButton(text="« К боту", callback_data=f"bot_{bot_id}")],
+        ])
+
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        await state.clear()
+        return
+
+    # mode == multi
+    selected = data.get("selected_regions") or []
+    if not selected:
+        await message.answer("❌ Регионы не выбраны.")
+        await state.clear()
+        return
+
+    # Для каждого региона: upsert config + apply
+    ok = []
+    fail = []
+
+    for code in selected:
+        desc = (configs.get(code) or {}).get("description")
+        if desc is None:
+            desc = default_desc
+
+        try:
+            await backend_request(
+                "POST",
+                f"/bots/{bot_id}/configs",
+                telegram_id=owner_id,
+                json={"region": code, "name": new_name, "description": desc},
+                with_api_key=True,
+            )
+            await backend_request(
+                "POST",
+                f"/bots/{bot_id}/configs/apply",
+                telegram_id=owner_id,
+                json={"region": code},
+                with_api_key=True,
+            )
+            ok.append(code)
+        except Exception:
+            fail.append(code)
+
+    regions_lines = "\n".join([f"{REGION_BY_CODE[c]['flag']} {REGION_BY_CODE[c]['title']}" for c in selected if c in REGION_BY_CODE])
+
+    if fail:
+        failed_lines = "\n".join([f"{REGION_BY_CODE[c]['flag']} {REGION_BY_CODE[c]['title']}" for c in fail if c in REGION_BY_CODE])
+        text = (
+            "⚠️ <b>Частично обновлено</b>\n\n"
+            f"🤖 Бот: @{bot_username}\n"
+            f"🌍 Регионов выбрано: {len(selected)}\n\n"
+            f"{regions_lines}\n\n"
+            f"🏷 <b>Новое название:</b> {new_name}\n\n"
+            "❌ Не удалось применить для:\n"
+            f"{failed_lines}"
+        )
+    else:
+        text = (
+            "✅ <b>Названия бота обновлены!</b>\n\n"
+            f"🤖 Бот: @{bot_username}\n"
+            "🌍 Регионы:\n"
+            f"{regions_lines}\n"
+            f"\n🏷 <b>Новое название:</b> {new_name}\n\n"
+            "Название будет отображаться для всех выбранных регионов."
+        )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔁 Изменить другой", callback_data=f"bot_{bot_id}_rename")],
+        [InlineKeyboardButton(text="« К боту", callback_data=f"bot_{bot_id}")],
+    ])
+
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await state.clear()
 
 
 if __name__ == "__main__":

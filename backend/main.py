@@ -184,15 +184,22 @@ async def apply_last_config(db: AsyncSession, bot: Bot, region: str):
     if not config:
         return
 
+    payload_name = {"name": config.name}
+    payload_desc = {"description": config.description}
+
+    if region != "default":
+        payload_name["language_code"] = region
+        payload_desc["language_code"] = region
+
     async with httpx.AsyncClient(timeout=10) as client:
         await client.post(
             f"https://api.telegram.org/bot{bot.token}/setMyName",
-            json={"name": config.name},
+            json=payload_name,
         )
 
         await client.post(
             f"https://api.telegram.org/bot{bot.token}/setMyDescription",
-            json={"description": config.description},
+            json=payload_desc,
         )
 
     logger.info(
@@ -1008,11 +1015,18 @@ async def apply_bot_config(
             detail=f"Config for region '{data.region}' not found",
         )
 
+    payload_name = {"name": config.name}
+    payload_desc = {"description": config.description}
+
+    if data.region != "default":
+        payload_name["language_code"] = data.region
+        payload_desc["language_code"] = data.region
+
     async with httpx.AsyncClient(timeout=10) as client:
         # setMyName
         resp_name = await client.post(
             f"https://api.telegram.org/bot{bot.token}/setMyName",
-            json={"name": config.name},
+            json=payload_name,
         )
 
         if resp_name.status_code != 200 or not resp_name.json().get("ok"):
@@ -1024,7 +1038,7 @@ async def apply_bot_config(
         # setMyDescription
         resp_desc = await client.post(
             f"https://api.telegram.org/bot{bot.token}/setMyDescription",
-            json={"description": config.description},
+            json=payload_desc,
         )
 
         if resp_desc.status_code != 200 or not resp_desc.json().get("ok"):

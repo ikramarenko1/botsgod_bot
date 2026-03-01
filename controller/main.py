@@ -362,9 +362,13 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
         return
 
     bot_username = next((b["username"] for b in bots if str(b["id"]) == str(bot_id)), None)
-    if not bot_username:
+    bot_obj = next((b for b in bots if str(b["id"]) == str(bot_id)), None)
+
+    if not bot_obj:
         await safe_edit(message, "Бот не найден.")
         return
+
+    is_active = bot_obj.get("role") == "active"
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -375,14 +379,23 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
             [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
             [InlineKeyboardButton(text="✏ Изменить название", callback_data=f"bot_{bot_id}_rename")],
             [InlineKeyboardButton(text="🖼 Изменить фото", callback_data=f"bot_{bot_id}_avatar")],
-            [InlineKeyboardButton(text="⛔ Выключить бота", callback_data=f"bot_{bot_id}_disable")],
+            [
+                InlineKeyboardButton(
+                    text="⛔ Выключить бота" if is_active else "✅ Включить бота",
+                    callback_data=f"bot_{bot_id}_disable" if is_active else f"bot_{bot_id}_enable"
+                )
+            ],
             [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
             [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
             [InlineKeyboardButton(text="« Назад", callback_data="my_bots")]
         ]
     )
 
-    text = f"Управление ботом @{bot_username}."
+    status_line = ""
+    if not is_active:
+        status_line = "\n\n⚠️ Бот выключен и не принимает сообщения."
+
+    text = f"Управление ботом @{bot_username}.{status_line}"
     if edit:
         await safe_edit(message, text, reply_markup=keyboard)
     else:
@@ -397,9 +410,13 @@ async def render_bot_menu_by_id(chat_id: int, owner_id: int, bot_id: str, messag
         return
 
     bot_username = next((b["username"] for b in bots if str(b["id"]) == str(bot_id)), None)
-    if not bot_username:
+    bot_obj = next((b for b in bots if str(b["id"]) == str(bot_id)), None)
+
+    if not bot_obj:
         await safe_edit_by_id(chat_id, message_id, "Бот не найден.")
         return
+
+    is_active = bot_obj.get("role") == "active"
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -410,7 +427,12 @@ async def render_bot_menu_by_id(chat_id: int, owner_id: int, bot_id: str, messag
             [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
             [InlineKeyboardButton(text="✏ Изменить название", callback_data=f"bot_{bot_id}_rename")],
             [InlineKeyboardButton(text="🖼 Изменить фото", callback_data=f"bot_{bot_id}_avatar")],
-            [InlineKeyboardButton(text="⛔ Выключить бота", callback_data=f"bot_{bot_id}_disable")],
+            [
+                InlineKeyboardButton(
+                    text="⛔ Выключить бота" if is_active else "✅ Включить бота",
+                    callback_data=f"bot_{bot_id}_disable" if is_active else f"bot_{bot_id}_enable"
+                )
+            ],
             [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
             [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
             [InlineKeyboardButton(text="« Назад", callback_data="my_bots")]
@@ -2558,6 +2580,201 @@ async def avatar_save(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
     await state.clear()
+
+
+@dp.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_disable"))
+async def bot_disable(callback):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    try:
+        await backend_request(
+            "PATCH",
+            f"/bots/{bot_id}/disable",
+            telegram_id=owner_id,
+            with_api_key=True
+        )
+    except Exception:
+        await callback.answer("❌ Ошибка выключения", show_alert=True)
+        return
+
+    await callback.answer("⛔ Бот выключен")
+    await render_bot_menu(callback.message, owner_id, bot_id, edit=True)
+
+
+@dp.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_enable"))
+async def bot_enable(callback):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    try:
+        await backend_request(
+            "PATCH",
+            f"/bots/{bot_id}/enable",
+            telegram_id=owner_id,
+            with_api_key=True
+        )
+    except Exception:
+        await callback.answer("❌ Ошибка включения", show_alert=True)
+        return
+
+    await callback.answer("✅ Бот включён")
+    await render_bot_menu(callback.message, owner_id, bot_id, edit=True)
+
+
+@dp.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_export_users"))
+async def export_users_menu(callback):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📄 TXT", callback_data=f"export_{bot_id}_txt"),
+                InlineKeyboardButton(text="📊 CSV", callback_data=f"export_{bot_id}_csv"),
+            ],
+            [
+                InlineKeyboardButton(text="🧾 JSON", callback_data=f"export_{bot_id}_json"),
+                InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}")
+            ],
+        ]
+    )
+
+    await safe_edit(
+        callback.message,
+        "📦 <b>Выгрузка пользователей</b>\n\nВыберите формат:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("export_"))
+async def export_users_file(callback):
+    owner_id = callback.from_user.id
+    parts = callback.data.split("_")
+
+    bot_id = parts[1]
+    file_format = parts[2]
+
+    await callback.answer("⏳ Формирую файл...")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
+                f"{BACKEND_URL}/bots/{bot_id}/users/export",
+                params={"format": file_format},
+                headers=owner_headers(owner_id, with_api_key=True),
+            )
+
+        response.raise_for_status()
+
+    except Exception as e:
+        print("EXPORT ERROR:", e)
+        await callback.message.answer("❌ Ошибка при выгрузке.")
+        return
+
+
+    # получаем имя файла
+    content_disposition = response.headers.get("Content-Disposition", "")
+    filename = f"users.{file_format}"
+
+    if "filename=" in content_disposition:
+        filename = content_disposition.split("filename=")[-1].strip('"')
+
+    total_users = response.headers.get("X-Total-Users", "—")
+    premium_users = response.headers.get("X-Premium-Users", "—")
+    normal_users = response.headers.get("X-Normal-Users", "—")
+
+    await callback.message.answer(
+        f"📦 <b>Выгрузка пользователей</b>\n\n"
+        f"👥 Всего пользователей: <b>{total_users}</b>\n"
+        f"💎 Premium: <b>{premium_users}</b>\n"
+        f"👤 Обычные: <b>{normal_users}</b>\n\n"
+        f"📄 Формат: <b>{file_format.upper()}</b>\n\n"
+        f"Формат полей:\n"
+        f"<code>ID;Username;Язык;Premium;Дата регистрации;Start Param</code>",
+        parse_mode="HTML"
+    )
+
+    file = BufferedInputFile(
+        response.content,
+        filename=filename
+    )
+
+    await callback.message.answer_document(document=file)
+    await callback.answer("✅ Файл выгрузки готов!")
+
+
+@dp.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_delete"))
+async def bot_delete_confirm(callback):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить",
+                    callback_data=f"bot_{bot_id}_delete_confirm"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="« Назад",
+                    callback_data=f"bot_{bot_id}"
+                )
+            ],
+        ]
+    )
+
+    await safe_edit(
+        callback.message,
+        "⚠️ <b>Вы уверены, что хотите удалить бота?</b>\n\n"
+        "Это действие нельзя отменить.",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_delete_confirm"))
+async def bot_delete_execute(callback):
+    owner_id = callback.from_user.id
+    bot_id = callback.data.split("_")[1]
+
+    try:
+        await backend_request(
+            "DELETE",
+            f"/bots/{bot_id}",
+            telegram_id=owner_id,
+            with_api_key=True
+        )
+    except Exception:
+        await callback.answer("❌ Ошибка удаления", show_alert=True)
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="« Назад",
+                    callback_data="my_bots"
+                )
+            ]
+        ]
+    )
+
+    await safe_edit(
+        callback.message,
+        "✅ <b>Бот успешно удалён</b>",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+    await callback.answer("Удалено")
 
 
 if __name__ == "__main__":

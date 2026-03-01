@@ -5,8 +5,8 @@ import os
 import logging
 import json
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File, Query
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, update, delete
 from datetime import datetime, timedelta
@@ -155,7 +155,7 @@ async def notify_admin(text: str):
                     },
                 )
             except Exception as e:
-                logger.error(f"Failed to notify admin group: {e}")
+                logger.error(f"Failed to notify admins: {e}")
 
 
 async def set_webhook(bot: Bot):
@@ -330,7 +330,11 @@ async def list_bot_users(
 
 
 @app.get("/bots/{bot_id}/users/export")
-async def export_bot_users(bot: Bot = Depends(get_owned_bot), db: AsyncSession = Depends(get_db)):
+async def export_bot_users(
+    bot: Bot = Depends(get_owned_bot),
+    db: AsyncSession = Depends(get_db),
+    format: str = Query("csv")
+):
     result = await db.execute(
         select(BotUser).where(
             BotUser.bot_id == bot.id,
@@ -339,38 +343,94 @@ async def export_bot_users(bot: Bot = Depends(get_owned_bot), db: AsyncSession =
     )
     users = result.scalars().all()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
+    if format not in ("csv", "txt", "json"):
+        raise HTTPException(400, "Invalid format")
 
-    # header
-    writer.writerow([
-        "id",
-        "telegram_id",
-        "username",
-        "first_name",
-        "last_name",
-        "created_at",
-        "last_seen_at",
-    ])
+    total = len(users)
+    premium = sum(1 for u in users if u.is_premium)
+    normal = total - premium
 
-    for u in users:
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+
         writer.writerow([
-            u.id,
-            u.telegram_id,
-            u.username,
-            u.first_name,
-            u.last_name,
-            u.created_at,
-            u.last_seen_at,
+            "telegram_id",
+            "username",
+            "first_name",
+            "last_name",
+            "language_code",
+            "is_premium",
+            "created_at",
+            "last_seen_at",
         ])
 
-    output.seek(0)
+        for u in users:
+            writer.writerow([
+                u.telegram_id,
+                u.username or "",
+                u.first_name or "",
+                u.last_name or "",
+                u.language_code or "",
+                bool(u.is_premium),
+                u.created_at.isoformat() if u.created_at else "",
+                u.last_seen_at.isoformat() if u.last_seen_at else "",
+            ])
 
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
+        content = output.getvalue()
+        filename = f"bot_{bot.id}_users.csv"
+        media_type = "text/csv"
+
+    elif format == "txt":
+        output = io.StringIO()
+
+        output.write(f"Всего пользователей: {total}\n")
+        output.write(f"Премиум пользователей: {premium}\n")
+        output.write(f"Обычных пользователей: {normal}\n\n")
+
+        output.write("Формат: Telegram ID;Язык;Premium;Дата регистрации\n\n")
+
+        for u in users:
+            line = (
+                f"{u.telegram_id};"
+                f"{u.language_code or ''};"
+                f"{bool(u.is_premium)};"
+                f"{u.created_at.isoformat() if u.created_at else ''}\n"
+            )
+            output.write(line)
+
+        content = output.getvalue()
+        filename = f"bot_{bot.id}_users.txt"
+        media_type = "text/plain"
+
+    # json
+    else:
+        data = [
+            {
+                "telegram_id": u.telegram_id,
+                "username": u.username,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "language_code": u.language_code,
+                "is_premium": bool(u.is_premium),
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+                "last_seen_at": u.last_seen_at.isoformat() if u.last_seen_at else None,
+            }
+            for u in users
+        ]
+
+        content = json.dumps(data, indent=2)
+        filename = f"bot_{bot.id}_users.json"
+        media_type = "application/json"
+
+    return Response(
+        content=content,
+        media_type=media_type,
         headers={
-            "Content-Disposition": f"attachment; filename=bot_{bot.id}_users.csv"
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Total-Users": str(total),
+            "X-Premium-Users": str(premium),
+            "X-Normal-Users": str(normal),
         },
     )
 
@@ -748,6 +808,18 @@ async def add_bot(
 
     except Exception:
         pass
+
+    # webhook
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{bot.token}/deleteWebhook"
+            )
+
+            await set_webhook(bot)
+
+    except Exception as e:
+        logger.error(f"Failed to set webhook for @{bot.username}: {e}")
 
     logger.info(f"New bot added: @{bot.username}")
 
@@ -1271,7 +1343,7 @@ async def telegram_webhook(
 
         if welcome:
             reply_markup = None
-            if welcome.buttons:
+            if welcome.buttons and isinstance(welcome.buttons, list):
                 reply_markup = {
                     "inline_keyboard": [
                         [{"text": b["text"], "url": b["url"]}]
@@ -1283,27 +1355,41 @@ async def telegram_webhook(
 
                 if welcome.photo_path and os.path.exists(welcome.photo_path):
                     with open(welcome.photo_path, "rb") as photo_file:
-                        await client.post(
+                        data_payload = {
+                            "chat_id": telegram_id,
+                            "caption": welcome.text or "",
+                        }
+
+                        if reply_markup:
+                            data_payload["reply_markup"] = json.dumps(reply_markup)
+
+                        response = await client.post(
                             f"https://api.telegram.org/bot{bot.token}/sendPhoto",
-                            data={
-                                "chat_id": telegram_id,
-                                "caption": welcome.text or "",
-                                "reply_markup": json.dumps(reply_markup) if reply_markup else None
-                            },
+                            data=data_payload,
                             files={
                                 "photo": photo_file
                             }
                         )
 
+                        if response.status_code != 200:
+                            logger.error(f"sendPhoto failed: {response.text}")
+
                 elif welcome.text:
-                    await client.post(
+                    payload = {
+                        "chat_id": telegram_id,
+                        "text": welcome.text,
+                    }
+
+                    if reply_markup:
+                        payload["reply_markup"] = reply_markup
+
+                    response = await client.post(
                         f"https://api.telegram.org/bot{bot.token}/sendMessage",
-                        json={
-                            "chat_id": telegram_id,
-                            "text": welcome.text,
-                            "reply_markup": reply_markup
-                        }
+                        json=payload,
                     )
+
+                    if response.status_code != 200:
+                        logger.error(f"sendPhoto failed: {response.text}")
 
         if bot.delayed_text and bot.delayed_delay_minutes is not None:
             send_at = datetime.utcnow() + timedelta(minutes=bot.delayed_delay_minutes)
@@ -1601,6 +1687,14 @@ async def disable_bot(
     bot.status = BotStatus.dead
 
     await db.commit()
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{bot.token}/deleteWebhook"
+            )
+    except:
+        pass
 
     return {"status": "disabled"}
 

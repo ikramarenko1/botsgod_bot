@@ -14,7 +14,10 @@ class BotUser(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), index=True)
+    bot_id: Mapped[int] = mapped_column(
+        ForeignKey("bots.id", ondelete="CASCADE"),
+        index=True
+    )
 
     telegram_id: Mapped[int] = mapped_column(BigInteger, index=True)
 

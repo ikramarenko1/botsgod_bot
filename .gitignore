@@ -18,3 +18,7 @@ venv/
 
 # Mediafiles
 media/
+
+# Claude Code
+.claude/
+CLAUDE.md

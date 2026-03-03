@@ -1,10 +1,10 @@
 from pydantic import BaseModel
 from typing import List, Literal
-from sqlalchemy.orm import relationship
 
 
 class BotAddRequest(BaseModel):
     token: str
+    role: str = "active"
 
 
 class BotResponse(BaseModel):

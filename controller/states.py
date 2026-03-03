@@ -2,6 +2,7 @@ from aiogram.fsm.state import StatesGroup, State
 
 class AddBotState(StatesGroup):
     waiting_for_token = State()
+    waiting_for_role = State()
 
 
 class WelcomeStates(StatesGroup):

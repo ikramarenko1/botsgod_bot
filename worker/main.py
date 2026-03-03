@@ -282,7 +282,7 @@ async def process_delayed(client: httpx.AsyncClient, msg: dict):
                 f"{BACKEND_URL}/delayed/{msg['id']}/sent",
                 headers=HEADERS,
             )
-            logger.info(f"[worker] delayed sent id:{msg['id']}")
+            logger.debug(f"[worker] delayed sent id:{msg['id']}")
         else:
             logger.warning(
                 f"[worker] delayed failed id:{msg['id']} status:{resp.status_code}"
@@ -304,8 +304,28 @@ async def call_delayed_worker(client: httpx.AsyncClient):
         for msg in messages:
             await process_delayed(client, msg)
 
+        if messages:
+            logger.info(f"[worker] delayed: {len(messages)} messages processed")
+
     except Exception as e:
         logger.error(f"[worker] delayed worker error: {e}")
+
+
+async def send_heartbeat(client: httpx.AsyncClient, did_health_check: bool, did_replacement: bool):
+    try:
+        payload = {}
+        if did_health_check:
+            payload["last_health_check"] = True
+        if did_replacement:
+            payload["last_replacement_run"] = True
+        await client.post(
+            f"{BACKEND_URL}/system/worker-heartbeat",
+            json=payload,
+            headers=HEADERS,
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"[worker] heartbeat error: {e}")
 
 
 async def loop():
@@ -319,16 +339,23 @@ async def loop():
         while True:
             now = asyncio.get_event_loop().time()
 
+            did_health = False
+            did_replace = False
+
             if now - last_health >= HEALTHCHECK_INTERVAL_SEC:
                 await call_healthcheck_all(client)
                 last_health = now
+                did_health = True
 
             if now - last_replace >= REPLACEMENT_INTERVAL_SEC:
                 await call_replacement(client)
                 last_replace = now
+                did_replace = True
 
             await call_broadcast_worker(client)
             await call_delayed_worker(client)
+
+            await send_heartbeat(client, did_health, did_replace)
 
             await asyncio.sleep(WORKER_LOOP_DELAY)
 

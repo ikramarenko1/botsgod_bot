@@ -35,7 +35,7 @@ async def rename_start(callback, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏷 Основное название", callback_data=f"rename_{bot_id}_type_main")],
         [InlineKeyboardButton(text="🌍 Мульти-гео", callback_data=f"rename_{bot_id}_type_geo")],
-        [InlineKeyboardButton(text="« Назад", callback_data=f"bot_{bot_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}")],
     ])
 
     await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
@@ -60,8 +60,8 @@ async def rename_main_info(callback, state: FSMContext):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="« Назад", callback_data=f"bot_{bot_id}_rename")],
-        [InlineKeyboardButton(text="« К боту", callback_data=f"bot_{bot_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}_rename")],
+        [InlineKeyboardButton(text="⬅️ К боту", callback_data=f"bot_{bot_id}")],
     ])
 
     await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
@@ -208,7 +208,7 @@ async def rename_geo_back(callback, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏷 Основное название", callback_data=f"rename_{bot_id}_type_main")],
         [InlineKeyboardButton(text="🌍 Мульти-гео", callback_data=f"rename_{bot_id}_type_geo")],
-        [InlineKeyboardButton(text="« Назад", callback_data=f"bot_{bot_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}")],
     ])
 
     await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")

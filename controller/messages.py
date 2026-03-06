@@ -22,13 +22,13 @@ def bot_menu_keyboard(bot_id: str, role: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⏳ Отложенное сообщение", callback_data=f"bot_{bot_id}_delayed")],
             [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
             [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
-            [InlineKeyboardButton(text="✏ Изменить название", callback_data=f"bot_{bot_id}_rename")],
+            [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"bot_{bot_id}_rename")],
             [InlineKeyboardButton(text="🖼 Изменить фото", callback_data=f"bot_{bot_id}_avatar")],
             [InlineKeyboardButton(text=toggle_text, callback_data=toggle_data)],
             [InlineKeyboardButton(text="📜 Логи замены", callback_data=f"bot_{bot_id}_replacement_logs")],
             [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
             [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
-            [InlineKeyboardButton(text="« Назад", callback_data="my_bots")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="my_bots")]
         ]
     )
 

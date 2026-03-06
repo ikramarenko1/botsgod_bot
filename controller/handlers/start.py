@@ -68,7 +68,7 @@ async def my_bots_handler(callback):
 
     inline_buttons.append([
         InlineKeyboardButton(
-            text="« Назад",
+            text="⬅️ Назад",
             callback_data="back_to_main"
         )
     ])

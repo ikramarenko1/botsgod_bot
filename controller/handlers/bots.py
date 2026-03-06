@@ -85,7 +85,7 @@ async def bot_stats_handler(callback):
             ],
             [
                 InlineKeyboardButton(
-                    text="« Назад",
+                    text="⬅️ Назад",
                     callback_data=f"bot_{bot_id}"
                 )
             ],
@@ -288,7 +288,7 @@ async def bot_delete_confirm(callback):
             ],
             [
                 InlineKeyboardButton(
-                    text="« Назад",
+                    text="⬅️ Назад",
                     callback_data=f"bot_{bot_id}"
                 )
             ],
@@ -326,7 +326,7 @@ async def bot_delete_execute(callback):
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="« Назад",
+                    text="⬅️ Назад",
                     callback_data="my_bots"
                 )
             ]

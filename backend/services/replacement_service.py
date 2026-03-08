@@ -17,7 +17,8 @@ from backend.models.replacement_log import ReplacementLog
 from backend.models.user import BotUser
 from backend.models.key import Key
 from backend.services.telegram_service import set_webhook, apply_last_config, apply_avatar
-from backend.services.notification_service import notify_admin, notify_owner
+from backend.models.team import TeamMember
+from backend.services.notification_service import notify_admin, notify_owner, notify_team_members
 
 logger = logging.getLogger("stagecontrol")
 
@@ -38,10 +39,16 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
     replacements = []
     not_replaced = []
 
-    # Группируем dead ботов по (owner, key_id)
+    # Пропускаем ботов без team_id (legacy/ошибка)
+    valid_dead_bots = [b for b in dead_bots if b.team_id is not None]
+    skipped = len(dead_bots) - len(valid_dead_bots)
+    if skipped:
+        logger.warning(f"Replacement: skipped {skipped} dead bots without team_id")
+
+    # Группируем dead ботов по (team_id, key_id)
     dead_by_group = defaultdict(list)
-    for bot in dead_bots:
-        dead_by_group[(bot.owner_telegram_id, bot.key_id)].append(bot)
+    for bot in valid_dead_bots:
+        dead_by_group[(bot.team_id, bot.key_id)].append(bot)
 
     all_key_ids = {kid for (_, kid) in dead_by_group.keys() if kid is not None}
     key_names = {}
@@ -51,12 +58,12 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
     logger.info(f"Replacement started: {len(dead_bots)} dead bots in {len(dead_by_group)} groups")
 
-    for (owner_id, key_id), group_dead in dead_by_group.items():
+    for (group_team_id, key_id), group_dead in dead_by_group.items():
         key_name = key_names.get(key_id) if key_id else None
         filters = [
             Bot.role == BotRole.reserve,
             Bot.status == BotStatus.alive,
-            Bot.owner_telegram_id == owner_id,
+            Bot.team_id == group_team_id,
         ]
         if key_id is not None:
             filters.append(Bot.key_id == key_id)
@@ -76,9 +83,21 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                 old_id = dead_bot.id
                 new_id = reserve_bot.id
 
+                # Удаляем юзеров reserve-бота, которые дублируют юзеров dead-бота
+                existing_tg_ids = (await db.execute(
+                    select(BotUser.telegram_id).where(BotUser.bot_id == old_id)
+                )).scalars().all()
+                if existing_tg_ids:
+                    await db.execute(
+                        delete(BotUser).where(
+                            BotUser.bot_id == new_id,
+                            BotUser.telegram_id.in_(existing_tg_ids),
+                        )
+                    )
                 await db.execute(update(BotUser).where(BotUser.bot_id == old_id).values(bot_id=new_id))
                 await db.execute(update(Broadcast).where(Broadcast.bot_id == old_id).values(bot_id=new_id))
                 await db.execute(update(DelayedMessage).where(DelayedMessage.bot_id == old_id).values(bot_id=new_id))
+                await db.execute(delete(BotWelcome).where(BotWelcome.bot_id == new_id))
                 await db.execute(update(BotWelcome).where(BotWelcome.bot_id == old_id).values(bot_id=new_id))
 
                 await db.execute(delete(BotConfig).where(BotConfig.bot_id == new_id))
@@ -163,6 +182,7 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
                 # Сохраняем данные для лога и уведомления до удаления
                 dead_username = dead_bot.username
+                dead_team_id = dead_bot.team_id
                 dead_owner_id = dead_bot.owner_telegram_id
 
                 replacements.append({
@@ -202,23 +222,30 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
                 try:
                     key_line = f"▫️ Ключ: 🔑 {key_name}\n" if key_name else ""
-                    await notify_owner(
-                        dead_owner_id,
+                    notify_text = (
                         f"🔄 <b>Замена бота</b>\n\n"
                         f"Бот @{dead_username} перестал отвечать и был автоматически заменён.\n\n"
                         f"{key_line}"
                         f"▫️ Старый бот: @{dead_username}\n"
                         f"▫️ Новый бот: @{reserve_bot.username}\n"
-                        f"▫️ Время: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC",
-                        reply_markup={
-                            "inline_keyboard": [[{
-                                "text": "⚙️ Управление ботом",
-                                "callback_data": f"bot_{reserve_bot.id}"
-                            }]]
-                        },
+                        f"▫️ Время: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC"
                     )
+                    notify_markup = {
+                        "inline_keyboard": [[{
+                            "text": "⚙️ Управление ботом",
+                            "callback_data": f"bot_{reserve_bot.id}"
+                        }]]
+                    }
+                    if dead_team_id:
+                        members_result = await db.execute(
+                            select(TeamMember.telegram_id).where(TeamMember.team_id == dead_team_id)
+                        )
+                        member_ids = members_result.scalars().all()
+                        await notify_team_members(member_ids, notify_text, notify_markup)
+                    else:
+                        await notify_owner(dead_owner_id, notify_text, notify_markup)
                 except Exception as notify_err:
-                    logger.error(f"Failed to notify owner about replacement: {notify_err}")
+                    logger.error(f"Failed to notify about replacement: {notify_err}")
             except Exception as e:
                 logger.error(
                     f"Replacement failed for @{group_dead[i].username}: {e}"

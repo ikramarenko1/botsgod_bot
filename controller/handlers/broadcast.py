@@ -252,26 +252,41 @@ async def broadcast_confirm(callback, state: FSMContext):
     buttons = data.get("buttons")
     scheduled_at = data.get("scheduled_at")
 
+    edit_mode = data.get("edit_mode", False)
+    edit_broadcast_id = data.get("broadcast_id")
+
     if not bot_id or not text or not scheduled_at:
         await callback.answer("Данные потерялись", show_alert=True)
         await state.clear()
         return
 
     try:
-        created = await backend_request(
-            "POST",
-            f"/bots/{bot_id}/broadcasts",
-            telegram_id=owner_id,
-            json={
-                "region": "default",
-                "text": text,
-                "buttons": buttons,
-                "scheduled_at": scheduled_at,
-            },
-            with_api_key=True,
-        )
+        if edit_mode and edit_broadcast_id:
+            created = await backend_request(
+                "PATCH",
+                f"/broadcasts/{edit_broadcast_id}",
+                telegram_id=owner_id,
+                json={
+                    "text": text,
+                    "buttons": buttons,
+                    "scheduled_at": scheduled_at,
+                },
+            )
+        else:
+            created = await backend_request(
+                "POST",
+                f"/bots/{bot_id}/broadcasts",
+                telegram_id=owner_id,
+                json={
+                    "region": "default",
+                    "text": text,
+                    "buttons": buttons,
+                    "scheduled_at": scheduled_at,
+                },
+                with_api_key=True,
+            )
     except Exception:
-        await callback.answer("❌ Ошибка создания", show_alert=True)
+        await callback.answer("❌ Ошибка сохранения", show_alert=True)
         return
 
     broadcast_id = created.get("id")

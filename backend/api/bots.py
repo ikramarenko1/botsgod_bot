@@ -20,7 +20,7 @@ from backend.models.broadcast import Broadcast, BroadcastStatus
 from backend.models.user import BotUser
 from backend.schemas.bot import BotAddRequest, BotResponse, BotRoleUpdateRequest, BotStatusUpdate, BotApplyConfigRequest
 from backend.schemas.bot_config import BotConfigCreate, BotConfigResponse
-from backend.utils.auth import verify_api_key, get_owner_id, get_owned_bot
+from backend.utils.auth import verify_api_key, get_owner_id, get_owned_bot, get_user_team_id
 from backend.services.bot_service import (
     add_bot as svc_add_bot,
     health_check_bot as svc_health_check_bot,
@@ -44,13 +44,13 @@ router = APIRouter()
 
 @router.get("/bots", response_model=List[BotResponse])
 async def list_bots(
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db)
 ):
     from backend.models.key import Key
 
     result = await db.execute(
-        select(Bot).where(Bot.owner_telegram_id == owner_id)
+        select(Bot).where(Bot.team_id == team_id)
     )
     bots = result.scalars().all()
 
@@ -345,11 +345,12 @@ async def get_bot_replacement_logs(
 async def add_bot(
     data: BotAddRequest,
     owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
     try:
-        bot = await svc_add_bot(db, data.token, owner_id, MEDIA_DIR, role=data.role)
+        bot = await svc_add_bot(db, data.token, owner_id, MEDIA_DIR, role=data.role, team_id=team_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -9,6 +9,8 @@ class BotConfigCreate(BaseModel):
 
 
 class BotConfigResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
     id: int
     region: str
     name: str

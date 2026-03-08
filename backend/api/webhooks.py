@@ -27,12 +27,18 @@ async def telegram_webhook(
     update: dict,
     db: AsyncSession = Depends(get_db),
 ):
-    message = update.get("message") or update.get("callback_query", {}).get("message")
+    callback_query = update.get("callback_query")
+    message = update.get("message") or (callback_query or {}).get("message")
 
     if not message:
         return {"status": "ignored"}
 
-    user_data = message.get("from")
+    # Для callback_query реальный юзер в update.callback_query.from, а не в message.from
+    if callback_query:
+        user_data = callback_query.get("from")
+    else:
+        user_data = message.get("from")
+
     if not user_data:
         return {"status": "no_user"}
 
@@ -111,7 +117,7 @@ async def telegram_webhook(
                     ]
                 }
 
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=15) as client:
 
                 if welcome.photo_path and os.path.exists(welcome.photo_path):
                     with open(welcome.photo_path, "rb") as photo_file:

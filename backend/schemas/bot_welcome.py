@@ -11,6 +11,8 @@ class WelcomeCreateRequest(BaseModel):
 
 
 class WelcomeResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
     id: int
     bot_id: int
     text: Optional[str]

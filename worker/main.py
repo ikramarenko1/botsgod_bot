@@ -123,10 +123,9 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
         logger.info(f"[worker] broadcast {broadcast_id} already locked")
         return
 
-    await notify_owner(
-        broadcast["owner_id"],
-        f"🚀 <b>Рассылка #{broadcast_id} началась</b>"
-    )
+    notify_ids = broadcast.get("notify_ids") or [broadcast["owner_id"]]
+    for nid in notify_ids:
+        await notify_owner(nid, f"🚀 <b>Рассылка #{broadcast_id} началась</b>")
 
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast_id}/stats",
@@ -228,14 +227,15 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
         headers=HEADERS,
     )
 
-    await notify_owner(
-        broadcast["owner_id"],
+    finish_text = (
         f"<b>Рассылка #{broadcast_id} завершена</b>\n\n"
         f"👥 Всего: {total}\n"
         f"✅ Отправлено: {sent}\n"
         f"❌ Ошибок: {failed}\n"
         f"📡 Статус: {final_status}"
     )
+    for nid in notify_ids:
+        await notify_owner(nid, finish_text)
 
     logger.info(
         f"[worker] broadcast {broadcast_id} finished. "
@@ -259,7 +259,7 @@ async def call_broadcast_worker(client: httpx.AsyncClient):
         logger.error(f"[worker] broadcast worker error: {e}")
 
 
-async def process_delayed(client: httpx.AsyncClient, msg: dict):
+async def process_delayed(client: httpx.AsyncClient, msg: dict, _retries: int = 0):
     try:
         reply_markup = None
         if msg.get("buttons"):
@@ -314,11 +314,14 @@ async def process_delayed(client: httpx.AsyncClient, msg: dict):
                 )
 
             if resp.status_code == 429:
+                if _retries >= 3:
+                    logger.warning(f"[worker] delayed 429 max retries id:{msg['id']}")
+                    return
                 data = resp.json()
                 retry_after = data.get("parameters", {}).get("retry_after", 1)
                 logger.warning(f"[worker] delayed 429. Sleeping {retry_after}s")
                 await asyncio.sleep(retry_after)
-                return await process_delayed(client, msg)
+                return await process_delayed(client, msg, _retries + 1)
 
         if resp.status_code == 200:
             await client.patch(

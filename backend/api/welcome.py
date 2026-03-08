@@ -98,7 +98,7 @@ async def upload_welcome_photo(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    if not file.content_type.startswith("image/"):
+    if not (file.content_type or "").startswith("image/"):
         raise HTTPException(400, "Only images allowed")
 
     content = await file.read()

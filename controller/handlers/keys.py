@@ -62,6 +62,27 @@ async def key_create_start(callback, state: FSMContext):
 
 @router.message(KeyStates.waiting_full_name)
 async def key_full_name(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    if data.get("rename_field") == "full_name":
+        owner_id = message.from_user.id
+        key_id = data["key_id"]
+        new_name = message.text.strip()
+        try:
+            await backend_request(
+                "PATCH", f"/keys/{key_id}",
+                telegram_id=owner_id,
+                json={"full_name": new_name},
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔑 К ключу", callback_data=f"key_{key_id}")],
+            ])
+            await message.answer(f"✅ Название обновлено: <b>{new_name}</b>", reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await message.answer("❌ Ошибка обновления.")
+        await state.clear()
+        return
+
     await state.update_data(full_name=message.text.strip())
     await state.set_state(KeyStates.waiting_short_name)
     await message.answer("Отправьте короткое название (до 50 символов):")
@@ -105,11 +126,10 @@ async def key_detail(callback):
     await _render_key_detail(callback, key_id, page=0)
 
 
-@router.callback_query(lambda c: c.data.startswith("key_") and "_p" in c.data and c.data.rsplit("_p", 1)[-1].isdigit() and c.data.split("_")[1].isdigit())
+@router.callback_query(lambda c: c.data.startswith("key_") and "_page_" in c.data and c.data.split("_")[1].isdigit())
 async def key_detail_page(callback):
-    parts = callback.data.rsplit("_p", 1)
-    key_id = parts[0].split("_")[1]
-    page = int(parts[1])
+    key_id = callback.data.split("_")[1]
+    page = int(callback.data.split("_page_")[1])
     await _render_key_detail(callback, key_id, page=page)
 
 

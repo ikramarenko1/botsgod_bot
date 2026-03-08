@@ -12,6 +12,7 @@ from backend.models.delayed_message import DelayedMessage
 from backend.models.replacement_log import ReplacementLog
 from backend.models.key import Key
 from backend.models.top_config import TopConfig
+from backend.models.team import Team, TeamMember
 
 
 async def init():

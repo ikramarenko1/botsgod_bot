@@ -5,6 +5,7 @@ from sqlalchemy import select, or_, func
 
 from backend.models.bot import Bot, BotRole, BotStatus
 from backend.models.broadcast import Broadcast, BroadcastStatus
+from backend.models.team import TeamMember
 
 
 async def get_scheduled_broadcasts(db: AsyncSession) -> list[dict]:
@@ -26,8 +27,9 @@ async def get_scheduled_broadcasts(db: AsyncSession) -> list[dict]:
 
     rows = result.all()
 
-    return [
-        {
+    broadcasts_list = []
+    for broadcast, bot in rows:
+        entry = {
             "id": broadcast.id,
             "bot_id": broadcast.bot_id,
             "bot_ids": broadcast.bot_ids,
@@ -36,8 +38,14 @@ async def get_scheduled_broadcasts(db: AsyncSession) -> list[dict]:
             "buttons": broadcast.buttons,
             "token": bot.token,
         }
-        for broadcast, bot in rows
-    ]
+        if bot.team_id:
+            members_result = await db.execute(
+                select(TeamMember.telegram_id).where(TeamMember.team_id == bot.team_id)
+            )
+            entry["notify_ids"] = members_result.scalars().all()
+        broadcasts_list.append(entry)
+
+    return broadcasts_list
 
 
 async def create_broadcast(db: AsyncSession, bot: Bot, data) -> Broadcast:

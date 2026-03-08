@@ -21,6 +21,7 @@ def main_menu_keyboard():
         inline_keyboard=[
             [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="my_keys")],
             [InlineKeyboardButton(text="🔎 Мои боты", callback_data="my_bots")],
+            [InlineKeyboardButton(text="👥 Моя команда", callback_data="my_team")],
             [InlineKeyboardButton(text="🧠 Статус Worker", callback_data="worker_status")],
         ]
     )

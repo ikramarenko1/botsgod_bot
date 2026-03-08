@@ -8,7 +8,7 @@ from sqlalchemy import select
 from backend.db.session import get_db
 from backend.models.key import Key
 from backend.models.top_config import TopConfig
-from backend.utils.auth import get_owner_id
+from backend.utils.auth import get_user_team_id
 
 router = APIRouter()
 
@@ -42,9 +42,9 @@ class TopConfigResponse(BaseModel):
         from_attributes = True
 
 
-async def _verify_key_owner(key_id: int, owner_id: int, db: AsyncSession) -> Key:
+async def _verify_key_team(key_id: int, team_id: int, db: AsyncSession) -> Key:
     key = await db.get(Key, key_id)
-    if not key or key.owner_telegram_id != owner_id:
+    if not key or key.team_id != team_id:
         raise HTTPException(404, "Key not found")
     return key
 
@@ -52,10 +52,10 @@ async def _verify_key_owner(key_id: int, owner_id: int, db: AsyncSession) -> Key
 @router.get("/keys/{key_id}/top-configs", response_model=List[TopConfigResponse])
 async def list_top_configs(
     key_id: int,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
-    await _verify_key_owner(key_id, owner_id, db)
+    await _verify_key_team(key_id, team_id, db)
 
     result = await db.execute(
         select(TopConfig).where(TopConfig.key_id == key_id)
@@ -67,10 +67,10 @@ async def list_top_configs(
 async def create_top_config(
     key_id: int,
     data: TopConfigCreateRequest,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
-    await _verify_key_owner(key_id, owner_id, db)
+    await _verify_key_team(key_id, team_id, db)
 
     config = TopConfig(
         key_id=key_id,
@@ -88,14 +88,14 @@ async def create_top_config(
 @router.get("/top-configs/{config_id}", response_model=TopConfigResponse)
 async def get_top_config(
     config_id: int,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     config = await db.get(TopConfig, config_id)
     if not config:
         raise HTTPException(404, "TopConfig not found")
 
-    await _verify_key_owner(config.key_id, owner_id, db)
+    await _verify_key_team(config.key_id, team_id, db)
     return config
 
 
@@ -103,14 +103,14 @@ async def get_top_config(
 async def update_top_config(
     config_id: int,
     data: TopConfigUpdateRequest,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     config = await db.get(TopConfig, config_id)
     if not config:
         raise HTTPException(404, "TopConfig not found")
 
-    await _verify_key_owner(config.key_id, owner_id, db)
+    await _verify_key_team(config.key_id, team_id, db)
 
     if data.name is not None:
         config.name = data.name
@@ -131,14 +131,14 @@ async def update_top_config(
 @router.delete("/top-configs/{config_id}")
 async def delete_top_config(
     config_id: int,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     config = await db.get(TopConfig, config_id)
     if not config:
         raise HTTPException(404, "TopConfig not found")
 
-    await _verify_key_owner(config.key_id, owner_id, db)
+    await _verify_key_team(config.key_id, team_id, db)
 
     await db.delete(config)
     await db.commit()

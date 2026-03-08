@@ -79,3 +79,7 @@ class KeyBroadcastStates(StatesGroup):
 class KeyRoleStates(StatesGroup):
     selecting_bots = State()
     selecting_role = State()
+
+
+class TeamStates(StatesGroup):
+    waiting_member_id = State()

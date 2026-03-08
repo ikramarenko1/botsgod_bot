@@ -12,7 +12,7 @@ from backend.services.telegram_service import set_webhook
 logger = logging.getLogger("stagecontrol")
 
 
-async def add_bot(db: AsyncSession, token: str, owner_id: int, media_dir: str, role: str = "active") -> Bot:
+async def add_bot(db: AsyncSession, token: str, owner_id: int, media_dir: str, role: str = "active", team_id: int = None) -> Bot:
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"https://api.telegram.org/bot{token}/getMe",
@@ -42,6 +42,7 @@ async def add_bot(db: AsyncSession, token: str, owner_id: int, media_dir: str, r
         role=BotRole(role),
         status=BotStatus.alive,
         owner_telegram_id=owner_id,
+        team_id=team_id,
     )
 
     db.add(bot)

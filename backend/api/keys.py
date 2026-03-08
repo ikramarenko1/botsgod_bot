@@ -7,7 +7,7 @@ from sqlalchemy import select
 from backend.db.session import get_db
 from backend.models.key import Key
 from backend.models.bot import Bot
-from backend.utils.auth import get_owner_id
+from backend.utils.auth import get_owner_id, get_user_team_id
 
 router = APIRouter()
 
@@ -39,11 +39,11 @@ class KeyDetailResponse(KeyResponse):
 
 @router.get("/keys", response_model=List[KeyResponse])
 async def list_keys(
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Key).where(Key.owner_telegram_id == owner_id)
+        select(Key).where(Key.team_id == team_id)
     )
     return result.scalars().all()
 
@@ -52,10 +52,12 @@ async def list_keys(
 async def create_key(
     data: KeyCreateRequest,
     owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     key = Key(
         owner_telegram_id=owner_id,
+        team_id=team_id,
         full_name=data.full_name,
         short_name=data.short_name,
     )
@@ -68,11 +70,11 @@ async def create_key(
 @router.get("/keys/{key_id}")
 async def get_key(
     key_id: int,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     key = await db.get(Key, key_id)
-    if not key or key.owner_telegram_id != owner_id:
+    if not key or key.team_id != team_id:
         raise HTTPException(404, "Key not found")
 
     result = await db.execute(
@@ -96,11 +98,11 @@ async def get_key(
 async def update_key(
     key_id: int,
     data: KeyUpdateRequest,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     key = await db.get(Key, key_id)
-    if not key or key.owner_telegram_id != owner_id:
+    if not key or key.team_id != team_id:
         raise HTTPException(404, "Key not found")
 
     if data.full_name is not None:
@@ -118,11 +120,11 @@ async def update_key(
 @router.delete("/keys/{key_id}")
 async def delete_key(
     key_id: int,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     key = await db.get(Key, key_id)
-    if not key or key.owner_telegram_id != owner_id:
+    if not key or key.team_id != team_id:
         raise HTTPException(404, "Key not found")
 
     # Отвязываем ботов
@@ -140,15 +142,15 @@ async def delete_key(
 async def assign_bot_to_key(
     key_id: int,
     bot_id: int,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     key = await db.get(Key, key_id)
-    if not key or key.owner_telegram_id != owner_id:
+    if not key or key.team_id != team_id:
         raise HTTPException(404, "Key not found")
 
     bot = await db.get(Bot, bot_id)
-    if not bot or bot.owner_telegram_id != owner_id:
+    if not bot or bot.team_id != team_id:
         raise HTTPException(404, "Bot not found")
 
     bot.key_id = key_id
@@ -160,15 +162,15 @@ async def assign_bot_to_key(
 async def unassign_bot_from_key(
     key_id: int,
     bot_id: int,
-    owner_id: int = Depends(get_owner_id),
+    team_id: int = Depends(get_user_team_id),
     db: AsyncSession = Depends(get_db),
 ):
     key = await db.get(Key, key_id)
-    if not key or key.owner_telegram_id != owner_id:
+    if not key or key.team_id != team_id:
         raise HTTPException(404, "Key not found")
 
     bot = await db.get(Bot, bot_id)
-    if not bot or bot.owner_telegram_id != owner_id:
+    if not bot or bot.team_id != team_id:
         raise HTTPException(404, "Bot not found")
 
     if bot.key_id == key_id:

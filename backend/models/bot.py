@@ -28,6 +28,7 @@ class Bot(Base):
     username: Mapped[str] = mapped_column(String(255), unique=True)
     token: Mapped[str] = mapped_column(String(255))
     owner_telegram_id = mapped_column(BigInteger, nullable=False, index=True)
+    team_id = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), nullable=True, index=True)
     key_id = mapped_column(ForeignKey("keys.id", ondelete="SET NULL"), nullable=True)
     avatar_path = mapped_column(String, nullable=True)
     role: Mapped[BotRole] = mapped_column(Enum(BotRole), default=BotRole.reserve)

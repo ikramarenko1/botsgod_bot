@@ -46,6 +46,28 @@ async def notify_admin(text: str):
                 logger.error(f"Failed to notify admins: {e}")
 
 
+async def notify_team_members(member_ids: list[int], text: str, reply_markup: dict = None):
+    if not CONTROLLER_BOT_TOKEN:
+        return
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        for tid in member_ids:
+            try:
+                payload = {
+                    "chat_id": tid,
+                    "text": text,
+                    "parse_mode": "HTML",
+                }
+                if reply_markup:
+                    payload["reply_markup"] = reply_markup
+                await client.post(
+                    f"https://api.telegram.org/bot{CONTROLLER_BOT_TOKEN}/sendMessage",
+                    json=payload,
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify team member {tid}: {e}")
+
+
 async def notify_owner(owner_id: int, text: str, reply_markup: dict = None):
     if not CONTROLLER_BOT_TOKEN:
         return

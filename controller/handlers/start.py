@@ -46,8 +46,11 @@ async def my_bots_handler(callback):
     owner_id = callback.from_user.id
 
     page = 0
-    if callback.data.startswith("my_bots_p"):
-        page = int(callback.data[len("my_bots_p"):])
+    if "_page_" in callback.data:
+        try:
+            page = int(callback.data.split("_page_")[1])
+        except (ValueError, IndexError):
+            pass
 
     try:
         bots = await backend_request(

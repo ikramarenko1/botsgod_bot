@@ -8,6 +8,7 @@ class BroadcastCreateRequest(BaseModel):
     text: str
     buttons: Optional[List[dict]] = None
     scheduled_at: Optional[datetime] = None
+    bot_ids: Optional[List[int]] = None
 
 
 class BroadcastResponse(BaseModel):
@@ -16,6 +17,7 @@ class BroadcastResponse(BaseModel):
     region: Optional[str]
     text: str
     buttons: Optional[List[dict]]
+    bot_ids: Optional[List[int]] = None
     status: str
 
     total_users: int = 0

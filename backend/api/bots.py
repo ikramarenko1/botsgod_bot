@@ -47,10 +47,18 @@ async def list_bots(
     owner_id: int = Depends(get_owner_id),
     db: AsyncSession = Depends(get_db)
 ):
+    from backend.models.key import Key
+
     result = await db.execute(
         select(Bot).where(Bot.owner_telegram_id == owner_id)
     )
     bots = result.scalars().all()
+
+    key_ids = {b.key_id for b in bots if b.key_id}
+    keys_map = {}
+    if key_ids:
+        keys_result = await db.execute(select(Key).where(Key.id.in_(key_ids)))
+        keys_map = {k.id: k.short_name for k in keys_result.scalars().all()}
 
     return [
         BotResponse(
@@ -58,6 +66,8 @@ async def list_bots(
             username=b.username,
             role=b.role.value,
             status=b.status.value,
+            key_id=b.key_id,
+            key_name=keys_map.get(b.key_id) if b.key_id else None,
         )
         for b in bots
     ]
@@ -542,12 +552,25 @@ async def update_bot_role(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
-    if data.role not in ("active", "reserve", "disabled"):
+    if data.role not in ("active", "reserve", "farm", "disabled"):
         raise HTTPException(status_code=400, detail="Invalid role")
 
     bot.role = BotRole(data.role)
     await db.commit()
     await db.refresh(bot)
+
+    if data.role in ("active", "farm"):
+        try:
+            from backend.services.telegram_service import set_webhook
+            await set_webhook(bot)
+        except Exception:
+            pass
+    elif data.role in ("reserve", "disabled"):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(f"https://api.telegram.org/bot{bot.token}/deleteWebhook")
+        except Exception:
+            pass
 
     return BotResponse(
         id=bot.id,

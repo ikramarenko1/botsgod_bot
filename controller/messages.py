@@ -35,13 +35,16 @@ def bot_menu_keyboard(bot_id: str, role: str) -> InlineKeyboardMarkup:
 
 # === Тексты сообщений ===
 
-def bot_menu_text(bot_username: str, role: str) -> str:
-    status_line = ""
-    if role == "disabled":
-        status_line = "\n\n⚠️ Бот выключен и не принимает сообщения."
-    elif role == "reserve":
-        status_line = "\n\n🔄 Резервный бот"
-    return f"Управление ботом @{bot_username}.{status_line}"
+def bot_menu_text(bot_username: str, role: str, key_name: Optional[str] = None) -> str:
+    role_lines = {
+        "disabled": "\n\n⛔ Забанен",
+        "reserve": "\n\n🟠 Резервный бот",
+        "farm": "\n\n🔄 Фарм бот",
+        "active": "\n\n🟢 Активный бот",
+    }
+    status_line = role_lines.get(role, "")
+    key_line = f"\n🔑 Ключ: {key_name}" if key_name else ""
+    return f"Управление ботом @{bot_username}.{status_line}{key_line}"
 
 
 def welcome_menu_text(
@@ -166,12 +169,37 @@ def broadcast_created_text(broadcast_id: int, status: str, scheduled_at_human: s
     )
 
 
-def broadcast_detail_text(broadcast_id: int, status: str, scheduled_at_human: str, buttons_flag: str, text: str) -> str:
-    return (
-        "📨 <b>Рассылка</b>\n\n"
-        f"🆔 ID: <code>{broadcast_id}</code>\n"
-        f"📡 Статус: <b>{status}</b>\n"
-        f"⏳ Отправка: <b>{scheduled_at_human}</b> (UTC+3)\n"
-        f"🔗 Кнопки: {buttons_flag}\n\n"
-        f"📝 <b>Текст:</b>\n<blockquote>{text or ''}</blockquote>"
-    )
+def broadcast_detail_text(
+    broadcast_id: int,
+    status: str,
+    scheduled_at_human: str,
+    buttons_flag: str,
+    text: str,
+    started_at_human: Optional[str] = None,
+    finished_at_human: Optional[str] = None,
+    total_users: int = 0,
+    sent_count: int = 0,
+    failed_count: int = 0,
+) -> str:
+    lines = [
+        "📨 <b>Рассылка</b>\n",
+        f"🆔 ID: <code>{broadcast_id}</code>",
+        f"📡 Статус: <b>{status}</b>",
+        f"⏳ Запланировано: <b>{scheduled_at_human}</b> (UTC+3)",
+        f"🔗 Кнопки: {buttons_flag}",
+    ]
+
+    if started_at_human:
+        lines.append(f"🚀 Начало: <b>{started_at_human}</b>")
+    if finished_at_human:
+        lines.append(f"🏁 Завершение: <b>{finished_at_human}</b>")
+
+    if total_users > 0 or status in ("sent", "failed", "sending"):
+        lines.append("")
+        lines.append(f"👥 Всего: <b>{total_users}</b>")
+        lines.append(f"✅ Отправлено: <b>{sent_count}</b>")
+        lines.append(f"❌ Ошибок: <b>{failed_count}</b>")
+
+    lines.append(f"\n📝 <b>Текст:</b>\n<blockquote>{text or ''}</blockquote>")
+
+    return "\n".join(lines)

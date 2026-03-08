@@ -60,7 +60,7 @@ async def delayed_text_save(message: Message, state: FSMContext):
         f"/bots/{bot_id}/delayed",
         telegram_id=owner_id,
         json={
-            "text": message.text,
+            "text": message.html_text,
             "buttons": current.get("buttons"),
             "delay_minutes": current.get("delay_minutes")
         }
@@ -68,7 +68,7 @@ async def delayed_text_save(message: Message, state: FSMContext):
 
     await message.answer(
         "✅ <b>Текст отложенного сообщения обновлён</b>\n\n"
-        f"<blockquote>{message.text}</blockquote>",
+        f"<blockquote>{message.html_text}</blockquote>",
         parse_mode="HTML"
     )
     await state.clear()
@@ -351,12 +351,14 @@ async def delayed_test(callback):
             await callback.message.answer_photo(
                 photo=photo_file,
                 caption=text,
-                reply_markup=reply_markup
+                reply_markup=reply_markup,
+                parse_mode="HTML",
             )
     else:
         await callback.message.answer(
             text,
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
+            parse_mode="HTML",
         )
 
     await callback.answer("✅ Тест отправлен")

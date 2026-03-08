@@ -240,7 +240,7 @@ async def rename_geo_done(callback, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"rename_{bot_id}_type_geo")],
-        [InlineKeyboardButton(text="« К боту", callback_data=f"bot_{bot_id}")],
+        [InlineKeyboardButton(text="⬅️ К боту", callback_data=f"bot_{bot_id}")],
     ])
 
     await state.set_state(RenameStates.waiting_new_name)
@@ -310,14 +310,14 @@ async def rename_save_name(message, state: FSMContext):
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔁 Изменить другой", callback_data=f"bot_{bot_id}_rename")],
-            [InlineKeyboardButton(text="« К боту", callback_data=f"bot_{bot_id}")],
+            [InlineKeyboardButton(text="⬅️ К боту", callback_data=f"bot_{bot_id}")],
         ])
 
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
         await state.clear()
         return
 
-    # mode == multi
+    # Мульти-режим: применяем ко всем выбранным регионам
     selected = data.get("selected_regions") or []
     if not selected:
         await message.answer("❌ Регионы не выбраны.")
@@ -376,7 +376,7 @@ async def rename_save_name(message, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔁 Изменить другой", callback_data=f"bot_{bot_id}_rename")],
-        [InlineKeyboardButton(text="« К боту", callback_data=f"bot_{bot_id}")],
+        [InlineKeyboardButton(text="⬅️ К боту", callback_data=f"bot_{bot_id}")],
     ])
 
     await message.answer(text, reply_markup=kb, parse_mode="HTML")

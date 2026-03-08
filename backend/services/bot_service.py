@@ -29,8 +29,8 @@ async def add_bot(db: AsyncSession, token: str, owner_id: int, media_dir: str, r
     tg_bot = payload["result"]
     username = tg_bot["username"]
 
-    if role not in ("active", "reserve"):
-        raise ValueError("Invalid role: must be 'active' or 'reserve'")
+    if role not in ("active", "reserve", "farm"):
+        raise ValueError("Invalid role: must be 'active', 'reserve' or 'farm'")
 
     existing = await db.execute(select(Bot).where(Bot.username == username))
     if existing.scalar_one_or_none():
@@ -71,7 +71,7 @@ async def add_bot(db: AsyncSession, token: str, owner_id: int, media_dir: str, r
     except Exception:
         pass
 
-    if role == "active":
+    if role in ("active", "farm"):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(

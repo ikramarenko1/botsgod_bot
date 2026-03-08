@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from controller.config import BACKEND_URL, INTERNAL_API_KEY
 from controller.common import backend_request, safe_edit, owner_headers
 from controller.utils import parse_utc_iso, UTC3_OFFSET
-from controller.keyboards.main import main_reply_keyboard, main_menu_keyboard
+from controller.keyboards.main import main_reply_keyboard, main_menu_keyboard, BOTS_PER_PAGE, _pagination_row
 from controller.messages import worker_status_text
 from controller.states import AddBotState
 
@@ -36,9 +36,18 @@ async def menu_handler(message: Message):
     )
 
 
-@router.callback_query(lambda c: c.data == "my_bots")
+@router.callback_query(lambda c: c.data == "noop")
+async def noop_handler(callback):
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("my_bots"))
 async def my_bots_handler(callback):
     owner_id = callback.from_user.id
+
+    page = 0
+    if callback.data.startswith("my_bots_p"):
+        page = int(callback.data[len("my_bots_p"):])
 
     try:
         bots = await backend_request(
@@ -51,20 +60,26 @@ async def my_bots_handler(callback):
         await callback.answer()
         return
 
+    role_icons = {"active": "🟢", "reserve": "🟠", "farm": "🔄", "disabled": "⛔"}
+
+    total_pages = max(1, (len(bots) + BOTS_PER_PAGE - 1) // BOTS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    page_bots = bots[page * BOTS_PER_PAGE : (page + 1) * BOTS_PER_PAGE]
+
     inline_buttons = []
 
-    for bot_obj in bots:
-        label = bot_obj["username"]
-        if bot_obj.get("role") == "reserve":
-            label = f"🔄 {label}"
-        elif bot_obj.get("role") == "disabled":
-            label = f"⛔ {label}"
+    for bot_obj in page_bots:
+        icon = role_icons.get(bot_obj.get("role"), "")
+        label = f"{icon} {bot_obj['username']}" if icon else bot_obj["username"]
         inline_buttons.append([
             InlineKeyboardButton(
                 text=label,
                 callback_data=f"bot_{bot_obj['id']}"
             )
         ])
+
+    if total_pages > 1:
+        inline_buttons.append(_pagination_row("my_bots", page, total_pages))
 
     inline_buttons.append([
         InlineKeyboardButton(
@@ -77,7 +92,7 @@ async def my_bots_handler(callback):
 
     await safe_edit(
         callback.message,
-        "Выберите бота из списка ниже.",
+        f"Ваши боты ({len(bots)}):",
         reply_markup=keyboard,
     )
 
@@ -140,87 +155,112 @@ async def back_to_main_handler(callback):
 @router.callback_query(lambda c: c.data == "add_bot")
 async def add_bot_start(callback, state: FSMContext):
     text = (
-        "Чтобы подключить бот, Вам нужно выполнить следующие действия:\n\n"
-        "1. Перейдите в @BotFather и создайте новый бот (можно импортировать существующий).\n"
-        "2. После создания бота Вы получите токен (123456:ABCDEF) — "
-        "скопируйте или перешлите его в этот чат.\n\n"
+        "Чтобы подключить бота, выполните следующие действия:\n\n"
+        "1. Перейдите в @BotFather и создайте бота.\n"
+        "2. Скопируйте токен (123456:ABCDEF) и отправьте его в этот чат.\n\n"
+        "💡 Можно отправить <b>несколько токенов</b> — каждый с новой строки.\n\n"
         "Важно: не подключайте боты, которые уже используются другими сервисами."
     )
 
-    await safe_edit(callback.message, text)
+    await safe_edit(callback.message, text, parse_mode="HTML")
     await state.set_state(AddBotState.waiting_for_token)
     await callback.answer()
 
 
 @router.message(AddBotState.waiting_for_token)
 async def add_bot_token_handler(message: Message, state: FSMContext):
-    token = message.text.strip()
+    lines = [line.strip() for line in message.text.strip().split("\n") if line.strip()]
+    tokens = [t for t in lines if ":" in t]
 
-    if ":" not in token:
-        await message.answer("❌ Похоже это не токен. Попробуйте снова.")
+    if not tokens:
+        await message.answer("❌ Не найдено ни одного токена. Токен должен содержать ':'.")
         return
 
-    await state.update_data(token=token)
+    await state.update_data(tokens=tokens)
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Активный бот", callback_data="add_role_active")],
-            [InlineKeyboardButton(text="🔄 Резервный бот", callback_data="add_role_reserve")],
+            [InlineKeyboardButton(text="🟢 Активный бот", callback_data="add_role_active")],
+            [InlineKeyboardButton(text="🟠 Резервный бот", callback_data="add_role_reserve")],
+            [InlineKeyboardButton(text="🔄 Фарм бот", callback_data="add_role_farm")],
         ]
     )
 
+    if len(tokens) > 1:
+        count_text = (
+            f"✅ Найдено токенов: <b>{len(tokens)}</b>\n\n"
+            "Каждый бот будет добавлен с выбранной ролью.\n"
+            "Выберите роль:"
+        )
+    else:
+        count_text = "Выберите роль:"
+
     await message.answer(
-        "Выберите роль для бота:",
+        count_text,
         reply_markup=keyboard,
+        parse_mode="HTML",
     )
 
     await state.set_state(AddBotState.waiting_for_role)
 
 
-@router.callback_query(AddBotState.waiting_for_role, lambda c: c.data in ("add_role_active", "add_role_reserve"))
+@router.callback_query(AddBotState.waiting_for_role, lambda c: c.data in ("add_role_active", "add_role_reserve", "add_role_farm"))
 async def add_bot_role_handler(callback, state: FSMContext):
     owner_id = callback.from_user.id
     data = await state.get_data()
-    token = data.get("token")
+    tokens = data.get("tokens", [])
 
-    role = "active" if callback.data == "add_role_active" else "reserve"
+    role_map = {
+        "add_role_active": "active",
+        "add_role_reserve": "reserve",
+        "add_role_farm": "farm",
+    }
+    role = role_map[callback.data]
+    role_labels = {"active": "🟢 Активный", "reserve": "🟠 Резервный", "farm": "🔄 Фарм"}
+    role_label = role_labels.get(role, role)
 
-    try:
-        result = await backend_request(
-            "POST",
-            "/bots/add",
-            telegram_id=owner_id,
-            json={"token": token, "role": role},
-            with_api_key=True,
-        )
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 400:
-            await safe_edit(callback.message, "❌ Неверный токен или бот уже добавлен.")
-        else:
-            await safe_edit(callback.message, "❌ Ошибка сервера.")
-        await callback.answer()
-        await state.clear()
-        return
-    except Exception:
-        await safe_edit(callback.message, "❌ Ошибка подключения к backend.")
-        await callback.answer()
-        await state.clear()
-        return
+    added = []
+    failed = []
 
-    username = result.get("username")
-    role_label = "активный" if role == "active" else "резервный"
+    for token in tokens:
+        try:
+            result = await backend_request(
+                "POST",
+                "/bots/add",
+                telegram_id=owner_id,
+                json={"token": token, "role": role},
+                with_api_key=True,
+            )
+            added.append(f"@{result.get('username')}")
+        except Exception:
+            short = token[:15] + "..." if len(token) > 15 else token
+            failed.append(short)
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔎 Мои боты", callback_data="my_bots")]
+            [InlineKeyboardButton(text="🔎 Мои боты", callback_data="my_bots")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
         ]
     )
 
-    await safe_edit(
-        callback.message,
-        f"✅ Бот @{username} добавлен как {role_label}.",
-        reply_markup=keyboard,
-    )
+    if len(tokens) == 1:
+        if added:
+            text = f"✅ Бот {added[0]} добавлен\n\nРоль: {role_label}"
+        else:
+            text = "❌ Неверный токен или бот уже добавлен."
+    else:
+        header = "⚠️ <b>Результат добавления</b>" if failed else "✅ <b>Боты успешно добавлены</b>"
+        lines = [f"{header}\n\nРоль: {role_label}\n"]
+        if added:
+            lines.append(f"✅ Добавлено: {len(added)}")
+            for u in added:
+                lines.append(f"  • {u}")
+        if failed:
+            lines.append(f"\n❌ Ошибки: {len(failed)}")
+            for t in failed:
+                lines.append(f"  • {t}")
+        text = "\n".join(lines)
 
+    await safe_edit(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
     await state.clear()

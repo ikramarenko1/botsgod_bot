@@ -63,7 +63,7 @@ async def broadcast_text_save(message: Message, state: FSMContext):
     wizard_msg_id = data["wizard_msg_id"]
 
     if message.text.strip() != "-":
-        await state.update_data(text=message.text)
+        await state.update_data(text=message.html_text)
 
     await state.set_state(BroadcastStates.waiting_buttons)
 
@@ -330,16 +330,11 @@ async def broadcasts_list(callback):
 
     bot_username = next((b["username"] for b in bots if str(b["id"]) == bot_id), "")
 
-    broadcasts = [
-        b for b in broadcasts
-        if b.get("status") in ("draft", "scheduled", "sending")
-    ]
-
     broadcasts = sorted(
         broadcasts,
         key=lambda x: x.get("id", 0),
         reverse=True
-    )[:15]
+    )[:20]
 
     if not broadcasts:
         text = (
@@ -405,6 +400,8 @@ async def broadcast_open(callback):
 
     st = br.get("status")
     sch3 = utc_iso_to_utc3_human(br.get("scheduled_at"))
+    started3 = utc_iso_to_utc3_human(br.get("started_at")) if br.get("started_at") else None
+    finished3 = utc_iso_to_utc3_human(br.get("finished_at")) if br.get("finished_at") else None
 
     keyboard_rows = []
 
@@ -421,6 +418,14 @@ async def broadcast_open(callback):
             InlineKeyboardButton(
                 text="🧪 Отправить сейчас",
                 callback_data=f"broadcast_{bot_id}_sendnow_{broadcast_id}"
+            )
+        ])
+
+    if st in ("sent", "failed", "sending"):
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text="🔄 Обновить",
+                callback_data=f"broadcast_{bot_id}_open_{broadcast_id}"
             )
         ])
 
@@ -442,7 +447,15 @@ async def broadcast_open(callback):
 
     await safe_edit(
         callback.message,
-        broadcast_detail_text(broadcast_id, st, sch3, buttons_status(br.get('buttons')), br.get('text')),
+        broadcast_detail_text(
+            broadcast_id, st, sch3,
+            buttons_status(br.get('buttons')), br.get('text'),
+            started_at_human=started3,
+            finished_at_human=finished3,
+            total_users=br.get('total_users', 0),
+            sent_count=br.get('sent_count', 0),
+            failed_count=br.get('failed_count', 0),
+        ),
         reply_markup=keyboard,
         parse_mode="HTML"
     )

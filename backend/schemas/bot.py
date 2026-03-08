@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 
 class BotAddRequest(BaseModel):
@@ -12,6 +12,8 @@ class BotResponse(BaseModel):
     username: str
     role: str
     status: str
+    key_id: Optional[int] = None
+    key_name: Optional[str] = None
 
 
 class BotListResponse(BaseModel):

@@ -63,7 +63,7 @@ async def welcome_text_save(message: Message, state: FSMContext):
         f"/bots/{bot_id}/welcome",
         telegram_id=owner_id,
         json={
-            "text": message.text,
+            "text": message.html_text,
             "photo_path": current.get("photo_path"),
             "buttons": current.get("buttons"),
             "is_enabled": True
@@ -72,7 +72,7 @@ async def welcome_text_save(message: Message, state: FSMContext):
 
     await message.answer(
         "✅ <b>Текст приветствия обновлён</b>\n\n"
-        f"<blockquote>{message.text}</blockquote>",
+        f"<blockquote>{message.html_text}</blockquote>",
         parse_mode="HTML"
     )
     await state.clear()
@@ -189,12 +189,14 @@ async def welcome_test(callback):
                     photo=photo_file,
                     caption=text or "",
                     reply_markup=reply_markup,
+                    parse_mode="HTML",
                 )
 
             elif text:
                 await callback.message.answer(
                     text,
                     reply_markup=reply_markup,
+                    parse_mode="HTML",
                 )
             else:
                 await callback.answer("❌ Сообщение пустое")

@@ -15,7 +15,7 @@ async def get_scheduled_broadcasts(db: AsyncSession) -> list[dict]:
         .join(Bot, Broadcast.bot_id == Bot.id)
         .where(
             Broadcast.status == BroadcastStatus.scheduled,
-            Bot.role == BotRole.active,
+            Bot.role.in_([BotRole.active, BotRole.farm]),
             Bot.status == BotStatus.alive,
             or_(
                 Broadcast.scheduled_at == None,
@@ -30,6 +30,7 @@ async def get_scheduled_broadcasts(db: AsyncSession) -> list[dict]:
         {
             "id": broadcast.id,
             "bot_id": broadcast.bot_id,
+            "bot_ids": broadcast.bot_ids,
             "owner_id": bot.owner_telegram_id,
             "text": broadcast.text,
             "buttons": broadcast.buttons,
@@ -53,6 +54,7 @@ async def create_broadcast(db: AsyncSession, bot: Bot, data) -> Broadcast:
         region=data.region,
         text=data.text,
         buttons=data.buttons,
+        bot_ids=getattr(data, 'bot_ids', None),
         scheduled_at=scheduled_at,
         status=status,
     )

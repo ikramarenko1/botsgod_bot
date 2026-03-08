@@ -134,48 +134,80 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
         headers=HEADERS,
     )
 
-    users_resp = await client.get(
-        f"{BACKEND_URL}/system/bots/{broadcast['bot_id']}/users",
-        headers=HEADERS,
-    )
-    users_resp.raise_for_status()
-    users = users_resp.json()
+    # Определяем список bot_id для рассылки
+    target_bot_ids = broadcast.get("bot_ids") or [broadcast["bot_id"]]
 
-    total = len(users)
+    total = 0
     sent = 0
     failed = 0
 
     reply_markup = build_reply_markup(broadcast.get("buttons"))
 
-    for user in users:
+    for target_bot_id in target_bot_ids:
+        # Получаем токен и пользователей для каждого бота
         try:
-            payload = {
-                "chat_id": user["telegram_id"],
-                "text": broadcast["text"],
-            }
-
-            if reply_markup:
-                payload["reply_markup"] = reply_markup
-
-            tg_resp = await client.post(
-                f"https://api.telegram.org/bot{broadcast['token']}/sendMessage",
-                json=payload,
-                timeout=10,
+            bot_resp = await client.get(
+                f"{BACKEND_URL}/system/bots/{target_bot_id}/users",
+                headers=HEADERS,
             )
+            bot_resp.raise_for_status()
+            users = bot_resp.json()
+        except Exception as e:
+            logger.error(f"[worker] broadcast {broadcast_id}: failed to get users for bot {target_bot_id}: {e}")
+            continue
 
-            if tg_resp.status_code == 200:
-                sent += 1
-            else:
-                failed += 1
-                logger.warning(
-                    f"[worker] send error {tg_resp.status_code}: {tg_resp.text}"
+        # Получаем токен бота
+        try:
+            token_resp = await client.get(
+                f"{BACKEND_URL}/system/bot-token/{target_bot_id}",
+                headers=HEADERS,
+            )
+            token_resp.raise_for_status()
+            bot_token = token_resp.json().get("token", broadcast["token"])
+        except Exception:
+            bot_token = broadcast["token"]
+
+        total += len(users)
+
+        for user in users:
+            try:
+                payload = {
+                    "chat_id": user["telegram_id"],
+                    "text": broadcast["text"],
+                    "parse_mode": "HTML",
+                }
+
+                if reply_markup:
+                    payload["reply_markup"] = reply_markup
+
+                tg_resp = await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json=payload,
+                    timeout=10,
                 )
 
-            await asyncio.sleep(0.05)
+                # Fallback для старых plain-text записей
+                if tg_resp.status_code == 400:
+                    payload.pop("parse_mode", None)
+                    tg_resp = await client.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        json=payload,
+                        timeout=10,
+                    )
 
-        except Exception as e:
-            failed += 1
-            logger.error(f"[worker] send exception: {e}")
+                if tg_resp.status_code == 200:
+                    sent += 1
+                else:
+                    failed += 1
+                    logger.warning(
+                        f"[worker] send error {tg_resp.status_code}: {tg_resp.text}"
+                    )
+
+                await asyncio.sleep(0.05)
+
+            except Exception as e:
+                failed += 1
+                logger.error(f"[worker] send exception: {e}")
 
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast_id}/stats",
@@ -247,6 +279,7 @@ async def process_delayed(client: httpx.AsyncClient, msg: dict):
                     data={
                         "chat_id": msg["telegram_id"],
                         "caption": msg["text"] or "",
+                        "parse_mode": "HTML",
                         "reply_markup": json.dumps(reply_markup) if reply_markup else None,
                     },
                     files={
@@ -259,6 +292,7 @@ async def process_delayed(client: httpx.AsyncClient, msg: dict):
             payload = {
                 "chat_id": msg["telegram_id"],
                 "text": msg["text"],
+                "parse_mode": "HTML",
             }
 
             if reply_markup:
@@ -269,6 +303,15 @@ async def process_delayed(client: httpx.AsyncClient, msg: dict):
                 json=payload,
                 timeout=10,
             )
+
+            # Fallback для старых plain-text записей
+            if resp.status_code == 400:
+                payload.pop("parse_mode", None)
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{msg['token']}/sendMessage",
+                    json=payload,
+                    timeout=10,
+                )
 
             if resp.status_code == 429:
                 data = resp.json()

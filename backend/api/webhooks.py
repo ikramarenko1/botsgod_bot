@@ -18,6 +18,8 @@ logger = logging.getLogger("stagecontrol")
 
 router = APIRouter()
 
+DEFAULT_FARM_TEXT = "Здравствуйте! Спасибо за обращение."
+
 
 @router.post("/webhooks/{bot_id}")
 async def telegram_webhook(
@@ -40,6 +42,7 @@ async def telegram_webhook(
     if not bot or bot.role == BotRole.disabled:
         raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
+    # Записываем пользователя в БД (для всех ролей кроме disabled)
     result = await db.execute(
         select(BotUser).where(
             BotUser.bot_id == bot_id,
@@ -68,6 +71,26 @@ async def telegram_webhook(
 
     await db.commit()
 
+    # Farm боты: отправляем farm-текст и выходим
+    if bot.role == BotRole.farm:
+        farm_text = DEFAULT_FARM_TEXT
+        if bot.key_id:
+            from backend.models.key import Key
+            key = await db.get(Key, bot.key_id)
+            if key and key.farm_text:
+                farm_text = key.farm_text
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{bot.token}/sendMessage",
+                    json={"chat_id": telegram_id, "text": farm_text, "parse_mode": "HTML"},
+                )
+        except Exception as e:
+            logger.error(f"Farm reply failed: {e}")
+
+        return {"status": "farm_reply"}
+
     text = message.get("text", "")
     if text.startswith("/start"):
         result = await db.execute(
@@ -95,6 +118,7 @@ async def telegram_webhook(
                         data_payload = {
                             "chat_id": telegram_id,
                             "caption": welcome.text or "",
+                            "parse_mode": "HTML",
                         }
 
                         if reply_markup:
@@ -115,6 +139,7 @@ async def telegram_webhook(
                     payload = {
                         "chat_id": telegram_id,
                         "text": welcome.text,
+                        "parse_mode": "HTML",
                     }
 
                     if reply_markup:

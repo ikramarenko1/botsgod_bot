@@ -174,8 +174,9 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
         return
 
     role = bot_obj.get("role", "active")
+    key_name = bot_obj.get("key_name")
     keyboard = bot_menu_keyboard(bot_id, role)
-    text = bot_menu_text(bot_username, role)
+    text = bot_menu_text(bot_username, role, key_name=key_name)
 
     if edit:
         await safe_edit(message, text, reply_markup=keyboard)
@@ -198,13 +199,14 @@ async def render_bot_menu_by_id(bot: Bot, chat_id: int, owner_id: int, bot_id: s
         return
 
     role = bot_obj.get("role", "active")
+    key_name = bot_obj.get("key_name")
     keyboard = bot_menu_keyboard(bot_id, role)
 
     await safe_edit_by_id(
         bot,
         chat_id=chat_id,
         message_id=message_id,
-        text=bot_menu_text(bot_username, role),
+        text=bot_menu_text(bot_username, role, key_name=key_name),
         reply_markup=keyboard
     )
 

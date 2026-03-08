@@ -43,6 +43,7 @@ async def list_broadcasts(
             region=b.region,
             text=b.text,
             buttons=b.buttons,
+            bot_ids=b.bot_ids,
             status=b.status.value,
 
             total_users=b.total_users,
@@ -82,6 +83,7 @@ async def create_broadcast(
         region=broadcast.region,
         text=broadcast.text,
         buttons=broadcast.buttons,
+        bot_ids=broadcast.bot_ids,
         status=broadcast.status.value,
         scheduled_at=broadcast.scheduled_at,
     )

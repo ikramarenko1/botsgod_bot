@@ -36,6 +36,7 @@ class Broadcast(Base):
 
     text: Mapped[str] = mapped_column(Text)
     buttons: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    bot_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
     status: Mapped[BroadcastStatus] = mapped_column(
         Enum(BroadcastStatus),

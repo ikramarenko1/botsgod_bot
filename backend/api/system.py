@@ -25,7 +25,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 MEDIA_DIR = os.path.join(PROJECT_ROOT, "media")
 
-# in-memory worker heartbeat
+# Статус worker в памяти
 worker_status = {
     "last_heartbeat": None,
     "last_health_check": None,

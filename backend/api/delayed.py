@@ -12,6 +12,7 @@ from backend.models.delayed_message import DelayedMessage, DelayedStatus
 from backend.schemas.delayed_message import DelayedConfigRequest
 from backend.utils.auth import verify_api_key, get_owned_bot
 from backend.services.delayed_service import get_pending_delayed
+from backend.api.webhooks import invalidate_bot_cache
 
 logger = logging.getLogger("stagecontrol")
 
@@ -67,6 +68,8 @@ async def set_delayed_message(
 
     await db.commit()
 
+    invalidate_bot_cache(bot.id)
+
     return {"status": "configured"}
 
 
@@ -98,6 +101,8 @@ async def upload_delayed_photo(
 
     bot.delayed_photo_path = file_path
     await db.commit()
+
+    invalidate_bot_cache(bot.id)
 
     return {"status": "uploaded"}
 

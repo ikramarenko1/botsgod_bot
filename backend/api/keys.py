@@ -8,6 +8,7 @@ from backend.db.session import get_db
 from backend.models.key import Key
 from backend.models.bot import Bot
 from backend.utils.auth import get_owner_id, get_user_team_id
+from backend.api.webhooks import invalidate_farm_text_cache, invalidate_bot_cache
 
 router = APIRouter()
 
@@ -114,6 +115,9 @@ async def update_key(
 
     await db.commit()
     await db.refresh(key)
+
+    invalidate_farm_text_cache(key.id)
+
     return key
 
 
@@ -155,6 +159,9 @@ async def assign_bot_to_key(
 
     bot.key_id = key_id
     await db.commit()
+
+    invalidate_bot_cache(bot.id)
+
     return {"status": "assigned"}
 
 
@@ -176,5 +183,6 @@ async def unassign_bot_from_key(
     if bot.key_id == key_id:
         bot.key_id = None
         await db.commit()
+        invalidate_bot_cache(bot.id)
 
     return {"status": "unassigned"}

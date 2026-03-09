@@ -32,6 +32,7 @@ from backend.services.bot_service import (
 from backend.services.replacement_service import (
     get_replacement_logs_for_bot,
 )
+from backend.api.webhooks import invalidate_bot_cache
 
 logger = logging.getLogger("stagecontrol")
 
@@ -560,6 +561,8 @@ async def update_bot_role(
     await db.commit()
     await db.refresh(bot)
 
+    invalidate_bot_cache(bot.id)
+
     if data.role in ("active", "farm"):
         try:
             from backend.services.telegram_service import set_webhook
@@ -591,6 +594,8 @@ async def update_bot_status(
     await db.commit()
     await db.refresh(bot)
 
+    invalidate_bot_cache(bot.id)
+
     return BotResponse(
         id=bot.id,
         username=bot.username,
@@ -606,6 +611,7 @@ async def enable_bot(
     _: None = Depends(verify_api_key),
 ):
     await svc_enable_bot(db, bot)
+    invalidate_bot_cache(bot.id)
     return {"status": "enabled"}
 
 
@@ -616,6 +622,7 @@ async def disable_bot(
     _: None = Depends(verify_api_key),
 ):
     await svc_disable_bot(db, bot)
+    invalidate_bot_cache(bot.id)
     return {"status": "disabled"}
 
 
@@ -625,5 +632,7 @@ async def delete_bot(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
+    bot_id = bot.id
     await svc_delete_bot(db, bot, MEDIA_DIR)
+    invalidate_bot_cache(bot_id)
     return {"status": "deleted"}

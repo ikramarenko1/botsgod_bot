@@ -1,9 +1,10 @@
 import os
 import logging
+from collections import defaultdict
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.models.bot import Bot, BotRole, BotStatus
 from backend.models.bot_config import BotConfig
@@ -111,46 +112,59 @@ async def health_check_bot(db: AsyncSession, bot: Bot) -> Bot:
 async def health_check_all(db: AsyncSession) -> list[dict]:
     logger.info("Health-check started")
 
+    # 1. Читаем ботов из БД — быстро
     result = await db.execute(
         select(Bot).where(Bot.role.in_([BotRole.active, BotRole.reserve]))
     )
     bots = result.scalars().all()
 
+    # Извлекаем данные, чтобы не зависеть от сессии во время HTTP
+    bot_data = [(bot.id, bot.token, bot.username, bot.role.value) for bot in bots]
+    await db.commit()
+
+    # 2. HTTP-проверки — долго, БД не трогаем
     checked = []
     counts = {"alive": 0, "dead": 0, "degraded": 0}
+    status_updates = {}  # bot_id -> new_status
 
-    for bot in bots:
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10) as client:
+        for bot_id, token, username, role in bot_data:
+            try:
                 resp = await client.get(
-                    f"https://api.telegram.org/bot{bot.token}/getMe"
+                    f"https://api.telegram.org/bot{token}/getMe"
                 )
 
-            if resp.status_code != 200 or not resp.json().get("ok"):
-                bot.status = BotStatus.dead
-            else:
-                bot.status = BotStatus.alive
+                if resp.status_code != 200 or not resp.json().get("ok"):
+                    new_status = BotStatus.dead
+                else:
+                    new_status = BotStatus.alive
 
-            logger.debug(
-                f"Health-check: @{bot.username} -> {bot.status.value}"
+            except httpx.TimeoutException:
+                new_status = BotStatus.degraded
+
+            logger.debug(f"Health-check: @{username} -> {new_status.value}")
+            status_updates[bot_id] = new_status
+            counts[new_status.value] = counts.get(new_status.value, 0) + 1
+
+            checked.append({
+                "id": bot_id,
+                "username": username,
+                "role": role,
+                "status": new_status.value,
+            })
+
+    # 3. Обновляем статусы в БД — bulk UPDATE (2-3 запроса вместо N)
+    from backend.db.session import AsyncSessionLocal
+    by_status = defaultdict(list)
+    for bid, new_status in status_updates.items():
+        by_status[new_status].append(bid)
+
+    async with AsyncSessionLocal() as update_db:
+        for status_val, bot_ids_list in by_status.items():
+            await update_db.execute(
+                update(Bot).where(Bot.id.in_(bot_ids_list)).values(status=status_val)
             )
-
-        except httpx.TimeoutException:
-            bot.status = BotStatus.degraded
-            logger.debug(
-                f"Health-check: @{bot.username} -> {bot.status.value}"
-            )
-
-        counts[bot.status.value] = counts.get(bot.status.value, 0) + 1
-
-        checked.append({
-            "id": bot.id,
-            "username": bot.username,
-            "role": bot.role.value,
-            "status": bot.status.value,
-        })
-
-    await db.commit()
+        await update_db.commit()
 
     logger.info(
         f"Health-check: {counts['alive']} alive, {counts['dead']} dead, "

@@ -10,7 +10,7 @@ import asyncio
 from sqlalchemy import text, inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.db.session import engine, AsyncSessionLocal
+from backend.db.session import engine, AsyncSessionLocal, _is_sqlite
 from backend.db.base import Base
 from backend.models.team import Team, TeamMember
 from backend.models.bot import Bot
@@ -60,10 +60,10 @@ async def migrate():
 
             # Создаём команду
             result = await db.execute(
-                text("INSERT INTO teams (name, created_by) VALUES (:name, :created_by)"),
+                text("INSERT INTO teams (name, created_by) VALUES (:name, :created_by) RETURNING id"),
                 {"name": "Моя команда", "created_by": owner_tid}
             )
-            team_id = result.lastrowid
+            team_id = result.scalar_one()
 
             await db.execute(
                 text("INSERT INTO team_members (team_id, telegram_id) VALUES (:team_id, :tid)"),
@@ -92,8 +92,19 @@ async def migrate():
 
 
 async def _add_column_if_missing(db: AsyncSession, table: str, column: str, col_type: str):
-    result = await db.execute(text(f"PRAGMA table_info({table})"))
-    columns = [row[1] for row in result.fetchall()]
+    if _is_sqlite:
+        result = await db.execute(text(f"PRAGMA table_info({table})"))
+        columns = [row[1] for row in result.fetchall()]
+    else:
+        result = await db.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = :table AND column_name = :column"
+            ),
+            {"table": table, "column": column}
+        )
+        columns = [row[0] for row in result.fetchall()]
+
     if column not in columns:
         await db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
         print(f"Добавлена колонка {column} в {table}")

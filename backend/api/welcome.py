@@ -11,6 +11,7 @@ from backend.models.bot import Bot
 from backend.models.bot_welcome import BotWelcome
 from backend.schemas.bot_welcome import WelcomeCreateRequest, WelcomeResponse
 from backend.utils.auth import get_owned_bot
+from backend.api.webhooks import invalidate_welcome_cache
 
 logger = logging.getLogger("stagecontrol")
 
@@ -89,6 +90,8 @@ async def upsert_welcome(
     await db.commit()
     await db.refresh(welcome)
 
+    invalidate_welcome_cache(bot.id)
+
     return welcome
 
 
@@ -140,5 +143,7 @@ async def upload_welcome_photo(
         welcome.is_enabled = True
 
     await db.commit()
+
+    invalidate_welcome_cache(bot.id)
 
     return {"status": "uploaded"}

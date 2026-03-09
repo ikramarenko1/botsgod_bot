@@ -16,7 +16,7 @@ from backend.models.delayed_message import DelayedMessage
 from backend.models.replacement_log import ReplacementLog
 from backend.models.user import BotUser
 from backend.models.key import Key
-from backend.services.telegram_service import set_webhook, apply_last_config, apply_avatar
+from backend.services.telegram_service import set_webhook, apply_avatar
 from backend.models.team import TeamMember
 from backend.services.notification_service import notify_admin, notify_owner, notify_team_members
 
@@ -58,6 +58,9 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
     logger.info(f"Replacement started: {len(dead_bots)} dead bots in {len(dead_by_group)} groups")
 
+    # Данные для HTTP-фазы, собираемые во время DB-фазы
+    http_tasks = []
+
     for (group_team_id, key_id), group_dead in dead_by_group.items():
         key_name = key_names.get(key_id) if key_id else None
         filters = [
@@ -82,6 +85,8 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
                 old_id = dead_bot.id
                 new_id = reserve_bot.id
+
+                # === ФАЗА 1: Все DB-операции ===
 
                 # Удаляем юзеров reserve-бота, которые дублируют юзеров dead-бота
                 existing_tg_ids = (await db.execute(
@@ -112,47 +117,30 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
                 reserve_bot.role = BotRole.active
 
-                try:
-                    async with httpx.AsyncClient(timeout=10) as client:
-                        await client.post(
-                            f"https://api.telegram.org/bot{dead_bot.token}/deleteWebhook"
-                        )
-                except Exception:
-                    pass
-
+                # Читаем configs для HTTP-фазы
                 configs_result = await db.execute(
                     select(BotConfig).where(BotConfig.bot_id == reserve_bot.id)
                 )
                 configs = configs_result.scalars().all()
-
-                applied_regions = []
-                failed_regions = []
+                config_payloads = []
                 for cfg in configs:
-                    try:
-                        await apply_last_config(db, reserve_bot, cfg.region)
-                        applied_regions.append(cfg.region)
-                    except Exception as cfg_err:
-                        failed_regions.append(cfg.region)
-                        logger.error(
-                            f"Failed to apply config region={cfg.region} "
-                            f"for @{reserve_bot.username}: {cfg_err}"
-                        )
+                    payload_name = {"name": cfg.name}
+                    payload_desc = {"description": cfg.description}
+                    if cfg.region != "default":
+                        payload_name["language_code"] = cfg.region
+                        payload_desc["language_code"] = cfg.region
+                    config_payloads.append((cfg.region, payload_name, payload_desc))
 
+                # Копирование файлов
                 has_avatar = False
                 if dead_bot.avatar_path and os.path.exists(dead_bot.avatar_path):
                     new_bot_dir = os.path.join(media_dir, f"bot_{reserve_bot.id}")
                     os.makedirs(new_bot_dir, exist_ok=True)
-
                     new_avatar_path = os.path.join(new_bot_dir, "avatar.jpg")
                     shutil.copyfile(dead_bot.avatar_path, new_avatar_path)
-
                     reserve_bot.avatar_path = new_avatar_path
-                    await db.flush()
-
-                    await apply_avatar(reserve_bot)
                     has_avatar = True
 
-                # Копирование welcome-фото
                 welcome_result = await db.execute(
                     select(BotWelcome).where(BotWelcome.bot_id == reserve_bot.id)
                 )
@@ -165,9 +153,7 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                         new_welcome_photo = os.path.join(new_bot_dir, os.path.basename(old_welcome_photo))
                         shutil.copyfile(old_welcome_photo, new_welcome_photo)
                         welcome.photo_path = new_welcome_photo
-                        await db.flush()
 
-                # Копирование delayed-фото
                 if reserve_bot.delayed_photo_path:
                     old_delayed_photo = reserve_bot.delayed_photo_path
                     if os.path.exists(old_delayed_photo):
@@ -176,76 +162,67 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                         new_delayed_photo = os.path.join(new_bot_dir, os.path.basename(old_delayed_photo))
                         shutil.copyfile(old_delayed_photo, new_delayed_photo)
                         reserve_bot.delayed_photo_path = new_delayed_photo
-                        await db.flush()
-
-                await set_webhook(reserve_bot)
 
                 # Сохраняем данные для лога и уведомления до удаления
                 dead_username = dead_bot.username
+                dead_token = dead_bot.token
                 dead_team_id = dead_bot.team_id
                 dead_owner_id = dead_bot.owner_telegram_id
+                reserve_token = reserve_bot.token
+                reserve_username = reserve_bot.username
+                reserve_id = reserve_bot.id
+                reserve_avatar_path = reserve_bot.avatar_path
 
                 replacements.append({
                     "dead_bot_id": old_id,
                     "dead_bot_username": dead_username,
-                    "new_active_id": reserve_bot.id,
-                    "new_active_username": reserve_bot.username,
+                    "new_active_id": reserve_id,
+                    "new_active_username": reserve_username,
                     "key_name": key_name,
                 })
 
                 log = ReplacementLog(
                     dead_bot_id=old_id,
                     dead_bot_username=dead_username,
-                    new_bot_id=reserve_bot.id,
-                    new_bot_username=reserve_bot.username,
+                    new_bot_id=reserve_id,
+                    new_bot_username=reserve_username,
                     replaced_at=datetime.utcnow()
                 )
-
                 db.add(log)
-                await db.flush()
 
-                # Удаляем dead бота — данные уже перенесены, история в ReplacementLog
+                # Читаем members для уведомлений
+                member_ids = []
+                if dead_team_id:
+                    members_result = await db.execute(
+                        select(TeamMember.telegram_id).where(TeamMember.team_id == dead_team_id)
+                    )
+                    member_ids = members_result.scalars().all()
+
+                # Удаляем dead бота
                 old_media_dir = os.path.join(media_dir, f"bot_{old_id}")
                 if os.path.exists(old_media_dir):
                     shutil.rmtree(old_media_dir)
                 await db.delete(dead_bot)
                 await db.flush()
 
-                parts = [f"@{dead_username} -> @{reserve_bot.username}"]
-                if applied_regions:
-                    parts.append(f"{len(applied_regions)} configs applied")
-                if failed_regions:
-                    parts.append(f"{len(failed_regions)} configs failed")
-                if has_avatar:
-                    parts.append("avatar copied")
-                logger.info(f"Replaced: {', '.join(parts)}")
+                # Собираем задачу для HTTP-фазы
+                http_tasks.append({
+                    "dead_token": dead_token,
+                    "dead_username": dead_username,
+                    "reserve_token": reserve_token,
+                    "reserve_username": reserve_username,
+                    "reserve_id": reserve_id,
+                    "reserve_avatar_path": reserve_avatar_path,
+                    "has_avatar": has_avatar,
+                    "config_payloads": config_payloads,
+                    "dead_team_id": dead_team_id,
+                    "dead_owner_id": dead_owner_id,
+                    "member_ids": member_ids,
+                    "key_name": key_name,
+                })
 
-                try:
-                    key_line = f"▫️ Ключ: 🔑 {key_name}\n" if key_name else ""
-                    notify_text = (
-                        f"🔄 <b>Замена бота</b>\n\n"
-                        f"Бот @{dead_username} перестал отвечать и был автоматически заменён.\n\n"
-                        f"{key_line}"
-                        f"▫️ Старый бот: @{dead_username}\n"
-                        f"▫️ Новый бот: @{reserve_bot.username}\n"
-                        f"▫️ Время: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC"
-                    )
-                    notify_markup = {
-                        "inline_keyboard": [[{
-                            "text": "⚙️ Управление ботом",
-                            "callback_data": f"bot_{reserve_bot.id}"
-                        }]]
-                    }
-                    if dead_team_id:
-                        members_result = await db.execute(
-                            select(TeamMember.telegram_id).where(TeamMember.team_id == dead_team_id)
-                        )
-                        member_ids = members_result.scalars().all()
-                        await notify_team_members(member_ids, notify_text, notify_markup)
-                    else:
-                        await notify_owner(dead_owner_id, notify_text, notify_markup)
-                except Exception as notify_err:
-                    logger.error(f"Failed to notify about replacement: {notify_err}")
+                logger.info(f"Replacement DB done: @{dead_username} -> @{reserve_username}")
+
             except Exception as e:
                 logger.error(
                     f"Replacement failed for @{group_dead[i].username}: {e}"
@@ -270,6 +247,100 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                 })
 
     await db.commit()
+    # === DB-сессия больше не нужна ===
+
+    # === ФАЗА 2: Все HTTP-вызовы (Telegram API + уведомления) ===
+    for task in http_tasks:
+        # deleteWebhook старого бота
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{task['dead_token']}/deleteWebhook"
+                )
+        except Exception:
+            pass
+
+        # apply configs
+        applied_regions = []
+        failed_regions = []
+        for region, payload_name, payload_desc in task["config_payloads"]:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{task['reserve_token']}/setMyName",
+                        json=payload_name,
+                    )
+                    await client.post(
+                        f"https://api.telegram.org/bot{task['reserve_token']}/setMyDescription",
+                        json=payload_desc,
+                    )
+                applied_regions.append(region)
+            except Exception as cfg_err:
+                failed_regions.append(region)
+                logger.error(
+                    f"Failed to apply config region={region} "
+                    f"for @{task['reserve_username']}: {cfg_err}"
+                )
+
+        # apply avatar
+        if task["has_avatar"] and task["reserve_avatar_path"] and os.path.exists(task["reserve_avatar_path"]):
+            # Создаём временный объект Bot для apply_avatar
+            dummy_bot = Bot(
+                id=task["reserve_id"],
+                token=task["reserve_token"],
+                username=task["reserve_username"],
+                avatar_path=task["reserve_avatar_path"],
+            )
+            try:
+                await apply_avatar(dummy_bot)
+            except Exception as e:
+                logger.error(f"Failed to apply avatar for @{task['reserve_username']}: {e}")
+
+        # set webhook
+        try:
+            dummy_bot = Bot(
+                id=task["reserve_id"],
+                token=task["reserve_token"],
+                username=task["reserve_username"],
+            )
+            await set_webhook(dummy_bot)
+        except Exception as e:
+            logger.error(f"Failed to set webhook for @{task['reserve_username']}: {e}")
+
+        # Логирование
+        parts = [f"@{task['dead_username']} -> @{task['reserve_username']}"]
+        if applied_regions:
+            parts.append(f"{len(applied_regions)} configs applied")
+        if failed_regions:
+            parts.append(f"{len(failed_regions)} configs failed")
+        if task["has_avatar"]:
+            parts.append("avatar copied")
+        logger.info(f"Replaced: {', '.join(parts)}")
+
+        # Уведомления
+        try:
+            key_name = task["key_name"]
+            key_line = f"▫️ Ключ: 🔑 {key_name}\n" if key_name else ""
+            notify_text = (
+                f"🔄 <b>Замена бота</b>\n\n"
+                f"Бот @{task['dead_username']} перестал отвечать и был автоматически заменён.\n\n"
+                f"{key_line}"
+                f"▫️ Старый бот: @{task['dead_username']}\n"
+                f"▫️ Новый бот: @{task['reserve_username']}\n"
+                f"▫️ Время: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC"
+            )
+            notify_markup = {
+                "inline_keyboard": [[{
+                    "text": "⚙️ Управление ботом",
+                    "callback_data": f"bot_{task['reserve_id']}"
+                }]]
+            }
+            if task["member_ids"]:
+                await notify_team_members(task["member_ids"], notify_text, notify_markup)
+            else:
+                await notify_owner(task["dead_owner_id"], notify_text, notify_markup)
+        except Exception as notify_err:
+            logger.error(f"Failed to notify about replacement: {notify_err}")
 
     logger.info(
         f"Replacement finished. Success: {len(replacements)}, Not replaced: {len(not_replaced)}"

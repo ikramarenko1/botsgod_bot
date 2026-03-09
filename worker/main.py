@@ -1,5 +1,6 @@
 import asyncio
 import json
+from typing import Optional
 
 import httpx
 import os
@@ -33,24 +34,51 @@ HEALTHCHECK_INTERVAL_SEC = 60
 REPLACEMENT_INTERVAL_SEC = 120
 WORKER_LOOP_DELAY = 10
 
+# Telegram лимит: 30 msg/sec на бота. Ставим 28 с запасом.
+BROADCAST_RATE_PER_BOT = 28
+# Глобальный лимит одновременных TCP-соединений к Telegram.
+# sendMessage = 2-3s на стороне Telegram (не contention).
+# 200 → 2.7s (74/sec), 600 → 5s (65/sec — contention).
+# 400 = sweet spot: ~3.2s, ~125/sec.
+BROADCAST_GLOBAL_CONCURRENCY = 400
+# Кол-во worker-корутин на бота.
+BROADCAST_WORKERS_PER_BOT = 40
+BROADCAST_PROGRESS_STEP = 1000
 
-async def notify_owner(owner_id: int, text: str):
+
+class BotRateLimiter:
+    """Per-bot rate limit (28/sec) + глобальный concurrency (общий семафор)."""
+
+    def __init__(self, rate: int, global_sem: asyncio.Semaphore):
+        self._rate_sem = asyncio.Semaphore(rate)
+        self._global_sem = global_sem
+
+    async def acquire(self):
+        # Сначала rate (ожидание без ресурсов), потом TCP-слот
+        await self._rate_sem.acquire()
+        asyncio.get_running_loop().call_later(1.0, self._rate_sem.release)
+        await self._global_sem.acquire()
+
+    def release(self):
+        self._global_sem.release()
+
+
+async def notify_owner(client: httpx.AsyncClient, owner_id: int, text: str):
     if not CONTROLLER_BOT_TOKEN:
         return
 
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{CONTROLLER_BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": owner_id,
-                    "text": text,
-                    "parse_mode": "HTML"
-                },
-                timeout=10,
-            )
+        await client.post(
+            f"https://api.telegram.org/bot{CONTROLLER_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": owner_id,
+                "text": text,
+                "parse_mode": "HTML"
+            },
+            timeout=10,
+        )
     except Exception as e:
-        logger.error(f"[worker] notify error: {e}")
+        logger.error(f"[worker] notify error: {type(e).__name__}: {e}")
 
 
 def is_valid_url(url: str) -> bool:
@@ -93,7 +121,7 @@ async def call_healthcheck_all(client: httpx.AsyncClient):
         r.raise_for_status()
         logger.info("[worker] health-check done")
     except Exception as e:
-        logger.error(f"[worker] health-check error: {e}")
+        logger.error(f"[worker] health-check error: {type(e).__name__}: {e}")
 
 
 async def call_replacement(client: httpx.AsyncClient):
@@ -106,7 +134,134 @@ async def call_replacement(client: httpx.AsyncClient):
         r.raise_for_status()
         logger.info("[worker] replacement checked")
     except Exception as e:
-        logger.error(f"[worker] replacement error: {e}")
+        logger.error(f"[worker] replacement error: {type(e).__name__}: {e}")
+
+
+async def _send_one_message(client: httpx.AsyncClient, limiter: BotRateLimiter,
+                            bot_token: str, user_tid: int,
+                            text: str, reply_markup: Optional[dict],
+                            diag: Optional[dict] = None) -> bool:
+    t0 = asyncio.get_running_loop().time()
+    await limiter.acquire()
+    t1 = asyncio.get_running_loop().time()
+    released = False
+    try:
+        payload = {
+            "chat_id": user_tid,
+            "text": text,
+            "parse_mode": "HTML",
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+
+        resp = await client.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json=payload,
+            timeout=10,
+        )
+        t2 = asyncio.get_running_loop().time()
+
+        # Диагностика: собираем timing первых 200 сообщений
+        if diag is not None and diag["count"] < 200:
+            diag["count"] += 1
+            diag["acquire_total"] += (t1 - t0)
+            diag["http_total"] += (t2 - t1)
+            if diag["count"] == 200:
+                avg_acq = diag["acquire_total"] / 200
+                avg_http = diag["http_total"] / 200
+                logger.info(
+                    f"[worker] DIAG: avg acquire={avg_acq:.3f}s, "
+                    f"avg http={avg_http:.3f}s (over 200 sends)"
+                )
+
+        if resp.status_code == 400:
+            payload.pop("parse_mode", None)
+            resp = await client.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                json=payload,
+                timeout=10,
+            )
+
+        if resp.status_code == 429:
+            data = resp.json()
+            retry_after = data.get("parameters", {}).get("retry_after", 1)
+            logger.warning(f"[worker] broadcast 429, sleep {retry_after}s")
+            limiter.release()  # освободить TCP-слот ДО сна
+            released = True
+            await asyncio.sleep(retry_after)
+            return False
+
+        return resp.status_code == 200
+
+    except Exception as e:
+        logger.error(f"[worker] send exception: {type(e).__name__}: {e}")
+        return False
+    finally:
+        if not released:
+            limiter.release()
+
+
+async def _report_progress(client: httpx.AsyncClient, broadcast_id: int, progress: dict):
+    """Fire-and-forget progress report — не блокирует воркеров."""
+    try:
+        await client.patch(
+            f"{BACKEND_URL}/broadcasts/{broadcast_id}/stats",
+            json={"sent_count": progress["sent"],
+                  "failed_count": progress["failed"]},
+            headers=HEADERS,
+            timeout=10,
+        )
+        logger.info(
+            f"[worker] broadcast {broadcast_id}: "
+            f"{progress['done']}/{progress['total']} processed"
+        )
+    except Exception:
+        pass
+
+
+async def _send_for_bot(client: httpx.AsyncClient, broadcast_id: int,
+                        bot_token: str, users: list,
+                        text: str, reply_markup: Optional[dict],
+                        progress: dict,
+                        global_sem: asyncio.Semaphore) -> tuple[int, int]:
+    limiter = BotRateLimiter(BROADCAST_RATE_PER_BOT, global_sem)
+    queue = asyncio.Queue()
+    sent = 0
+    failed = 0
+    diag = {"count": 0, "acquire_total": 0.0, "http_total": 0.0}
+
+    for u in users:
+        queue.put_nowait(u["telegram_id"])
+
+    async def worker():
+        nonlocal sent, failed
+        while True:
+            try:
+                tid = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            result = await _send_one_message(
+                client, limiter, bot_token, tid, text, reply_markup, diag
+            )
+            if result:
+                sent += 1
+                progress["sent"] += 1
+            else:
+                failed += 1
+                progress["failed"] += 1
+
+            progress["done"] += 1
+            if progress["done"] - progress["last_reported"] >= BROADCAST_PROGRESS_STEP:
+                progress["last_reported"] = progress["done"]
+                asyncio.create_task(
+                    _report_progress(client, broadcast_id, progress)
+                )
+
+    workers = [asyncio.create_task(worker()) for _ in range(BROADCAST_WORKERS_PER_BOT)]
+    await asyncio.gather(*workers)
+
+    return sent, failed
 
 
 async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
@@ -125,7 +280,7 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
 
     notify_ids = broadcast.get("notify_ids") or [broadcast["owner_id"]]
     for nid in notify_ids:
-        await notify_owner(nid, f"🚀 <b>Рассылка #{broadcast_id} началась</b>")
+        await notify_owner(client, nid, f"🚀 <b>Рассылка #{broadcast_id} началась</b>")
 
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast_id}/stats",
@@ -133,80 +288,72 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
         headers=HEADERS,
     )
 
-    # Определяем список bot_id для рассылки
-    target_bot_ids = broadcast.get("bot_ids") or [broadcast["bot_id"]]
-
-    total = 0
-    sent = 0
-    failed = 0
+    target_bot_ids = list(dict.fromkeys(broadcast.get("bot_ids") or [broadcast["bot_id"]]))
 
     reply_markup = build_reply_markup(broadcast.get("buttons"))
 
-    for target_bot_id in target_bot_ids:
-        # Получаем токен и пользователей для каждого бота
-        try:
-            bot_resp = await client.get(
-                f"{BACKEND_URL}/system/bots/{target_bot_id}/users",
-                headers=HEADERS,
-            )
-            bot_resp.raise_for_status()
-            users = bot_resp.json()
-        except Exception as e:
-            logger.error(f"[worker] broadcast {broadcast_id}: failed to get users for bot {target_bot_id}: {e}")
-            continue
+    # Загружаем данные по ботам (макс. 5 параллельно, чтобы не перегрузить backend)
+    fetch_sem = asyncio.Semaphore(5)
 
-        # Получаем токен бота
-        try:
-            token_resp = await client.get(
-                f"{BACKEND_URL}/system/bot-token/{target_bot_id}",
-                headers=HEADERS,
-            )
-            token_resp.raise_for_status()
-            bot_token = token_resp.json().get("token", broadcast["token"])
-        except Exception:
-            bot_token = broadcast["token"]
-
-        total += len(users)
-
-        for user in users:
+    async def _fetch_bot_data(bot_id: int):
+        async with fetch_sem:
             try:
-                payload = {
-                    "chat_id": user["telegram_id"],
-                    "text": broadcast["text"],
-                    "parse_mode": "HTML",
-                }
+                bot_resp = await client.get(
+                    f"{BACKEND_URL}/system/bots/{bot_id}/users",
+                    headers=HEADERS,
+                    timeout=30,
+                )
+                bot_resp.raise_for_status()
+                users = bot_resp.json()
+            except Exception as e:
+                logger.error(f"[worker] broadcast {broadcast_id}: get users bot {bot_id}: {type(e).__name__}: {e}")
+                return None
 
-                if reply_markup:
-                    payload["reply_markup"] = reply_markup
-
-                tg_resp = await client.post(
-                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    json=payload,
+            try:
+                token_resp = await client.get(
+                    f"{BACKEND_URL}/system/bot-token/{bot_id}",
+                    headers=HEADERS,
                     timeout=10,
                 )
-
-                # Fallback для старых plain-text записей
-                if tg_resp.status_code == 400:
-                    payload.pop("parse_mode", None)
-                    tg_resp = await client.post(
-                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                        json=payload,
-                        timeout=10,
-                    )
-
-                if tg_resp.status_code == 200:
-                    sent += 1
-                else:
-                    failed += 1
-                    logger.warning(
-                        f"[worker] send error {tg_resp.status_code}: {tg_resp.text}"
-                    )
-
-                await asyncio.sleep(0.05)
-
+                token_resp.raise_for_status()
+                bot_token = token_resp.json().get("token", broadcast["token"])
             except Exception as e:
-                failed += 1
-                logger.error(f"[worker] send exception: {e}")
+                logger.warning(f"[worker] broadcast {broadcast_id}: token fallback for bot {bot_id}: {type(e).__name__}")
+                bot_token = broadcast["token"]
+
+            if users:
+                logger.info(f"[worker] broadcast {broadcast_id}: bot {bot_id}, {len(users)} users")
+                return (bot_token, users)
+            return None
+
+    fetch_results = await asyncio.gather(*[
+        _fetch_bot_data(bid) for bid in target_bot_ids
+    ])
+
+    bot_jobs = [r for r in fetch_results if r is not None]
+    total = sum(len(users) for _, users in bot_jobs)
+
+    # Один глобальный семафор на все боты — контролирует общее число TCP-соединений
+    global_sem = asyncio.Semaphore(BROADCAST_GLOBAL_CONCURRENCY)
+
+    progress = {"done": 0, "sent": 0, "failed": 0, "last_reported": 0, "total": total}
+
+    logger.info(f"[worker] broadcast {broadcast_id}: starting, {len(bot_jobs)} bots, {total} users total")
+
+    bot_results = await asyncio.gather(*[
+        _send_for_bot(client, broadcast_id, bot_token, users,
+                      broadcast["text"], reply_markup, progress, global_sem)
+        for bot_token, users in bot_jobs
+    ], return_exceptions=True)
+
+    sent = 0
+    failed = 0
+    for r in bot_results:
+        if isinstance(r, Exception):
+            logger.error(f"[worker] broadcast {broadcast_id}: bot failed: {type(r).__name__}: {r}")
+        else:
+            sent += r[0]
+            failed += r[1]
 
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast_id}/stats",
@@ -235,11 +382,10 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
         f"📡 Статус: {final_status}"
     )
     for nid in notify_ids:
-        await notify_owner(nid, finish_text)
+        await notify_owner(client, nid, finish_text)
 
     logger.info(
-        f"[worker] broadcast {broadcast_id} finished. "
-        f"Total: {total}, Sent: {sent}, Failed: {failed}"
+        f"[worker] broadcast {broadcast_id} done: {sent}/{total} sent, {failed} failed"
     )
 
 
@@ -256,7 +402,7 @@ async def call_broadcast_worker(client: httpx.AsyncClient):
             await process_broadcast(client, b)
 
     except Exception as e:
-        logger.error(f"[worker] broadcast worker error: {e}")
+        logger.error(f"[worker] broadcast worker error: {type(e).__name__}: {e}")
 
 
 async def process_delayed(client: httpx.AsyncClient, msg: dict, _retries: int = 0):
@@ -328,14 +474,13 @@ async def process_delayed(client: httpx.AsyncClient, msg: dict, _retries: int = 
                 f"{BACKEND_URL}/delayed/{msg['id']}/sent",
                 headers=HEADERS,
             )
-            logger.debug(f"[worker] delayed sent id:{msg['id']}")
         else:
             logger.warning(
                 f"[worker] delayed failed id:{msg['id']} status:{resp.status_code}"
             )
 
     except Exception as e:
-        logger.error(f"[worker] delayed error id:{msg['id']} {e}")
+        logger.error(f"[worker] delayed error id:{msg['id']} {type(e).__name__}: {e}")
 
 
 async def call_delayed_worker(client: httpx.AsyncClient):
@@ -354,7 +499,7 @@ async def call_delayed_worker(client: httpx.AsyncClient):
             logger.info(f"[worker] delayed: {len(messages)} messages processed")
 
     except Exception as e:
-        logger.error(f"[worker] delayed worker error: {e}")
+        logger.error(f"[worker] delayed worker error: {type(e).__name__}: {e}")
 
 
 async def send_heartbeat(client: httpx.AsyncClient, did_health_check: bool, did_replacement: bool):
@@ -371,19 +516,24 @@ async def send_heartbeat(client: httpx.AsyncClient, did_health_check: bool, did_
             timeout=10,
         )
     except Exception as e:
-        logger.error(f"[worker] heartbeat error: {e}")
+        logger.error(f"[worker] heartbeat error: {type(e).__name__}: {e}")
 
 
 async def loop():
     logger.info("[worker] started")
 
-    async with httpx.AsyncClient() as client:
+    # Connection pool: 400 для TG + запас для backend.
+    limits = httpx.Limits(
+        max_connections=500,
+        max_keepalive_connections=400,
+    )
+    async with httpx.AsyncClient(limits=limits) as client:
 
         last_health = 0
         last_replace = 0
 
         while True:
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
 
             did_health = False
             did_replace = False

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from sqlalchemy import String, DateTime, ForeignKey, BigInteger, Boolean, UniqueConstraint, Integer
+from sqlalchemy import String, DateTime, ForeignKey, BigInteger, Boolean, UniqueConstraint, Integer, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 
@@ -11,6 +11,7 @@ class BotUser(Base):
     __tablename__ = "bot_users"
     __table_args__ = (
         UniqueConstraint("bot_id", "telegram_id", name="uq_bot_users_botid_tgid"),
+        Index("ix_bot_users_bot_id_is_active", "bot_id", "is_active"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

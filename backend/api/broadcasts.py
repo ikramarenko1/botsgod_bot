@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.db.session import get_db
 from backend.models.bot import Bot
@@ -127,7 +127,7 @@ async def update_broadcast_status(
     allowed_transitions = {
         "draft": ["scheduled", "cancelled"],
         "scheduled": ["sending", "cancelled"],
-        "sending": ["sent", "failed"],
+        "sending": ["sending", "sent", "failed"],
         "failed": ["scheduled"],
         "sent": [],
         "cancelled": [],
@@ -157,31 +157,28 @@ async def update_broadcast_stats(
     _: None = Depends(verify_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Broadcast).where(Broadcast.id == broadcast_id)
-    )
-    broadcast = result.scalar_one_or_none()
-
-    if not broadcast:
-        raise HTTPException(404, "Broadcast not found")
+    values = {}
 
     if "total_users" in data:
-        broadcast.total_users = data["total_users"]
-
+        values["total_users"] = data["total_users"]
     if "sent_count" in data:
-        broadcast.sent_count = data["sent_count"]
-
+        values["sent_count"] = data["sent_count"]
     if "failed_count" in data:
-        broadcast.failed_count = data["failed_count"]
-
+        values["failed_count"] = data["failed_count"]
     if "started_at" in data:
-        broadcast.started_at = datetime.utcnow()
-
+        values["started_at"] = datetime.utcnow()
     if "finished_at" in data:
-        broadcast.finished_at = datetime.utcnow()
+        values["finished_at"] = datetime.utcnow()
 
-    await db.commit()
-    await db.refresh(broadcast)
+    if values:
+        result = await db.execute(
+            update(Broadcast)
+            .where(Broadcast.id == broadcast_id)
+            .values(**values)
+        )
+        if result.rowcount == 0:
+            raise HTTPException(404, "Broadcast not found")
+        await db.commit()
 
     return {"status": "ok"}
 

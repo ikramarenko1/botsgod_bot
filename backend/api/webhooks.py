@@ -41,14 +41,52 @@ _http_client = None
 _db_semaphore = asyncio.Semaphore(15)
 
 
+# Семафор: ограничивает параллельные отправки в Telegram API.
+_send_semaphore = asyncio.Semaphore(30)
+
+_MAX_RETRIES = 2
+_RETRY_DELAYS = (0.5, 1.5)
+
+
 def _get_http_client():
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(
-            timeout=15,
+            timeout=20,
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
     return _http_client
+
+
+async def _tg_request(client, bot_token, method, retries=_MAX_RETRIES, **kwargs):
+    """Отправка запроса в Telegram API с retry и семафором."""
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    async with _send_semaphore:
+        for attempt in range(1 + retries):
+            try:
+                resp = await client.post(url, **kwargs)
+                if resp.status_code == 429:
+                    retry_after = float(resp.json().get("parameters", {}).get("retry_after", 1))
+                    logger.warning(f"Telegram 429, retry_after={retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    continue
+                if resp.status_code >= 500 and attempt < retries:
+                    await asyncio.sleep(_RETRY_DELAYS[attempt])
+                    continue
+                if resp.status_code != 200:
+                    logger.error(f"Telegram {method} failed ({resp.status_code}): {resp.text}")
+                return resp
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt < retries:
+                    logger.warning(f"Telegram {method} attempt {attempt+1} failed: {e}")
+                    await asyncio.sleep(_RETRY_DELAYS[attempt])
+                    continue
+                logger.error(f"Telegram {method} failed after {retries+1} attempts: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"Telegram {method} unexpected error: {e}")
+                return None
+    return None
 
 
 async def _get_bot_cached(bot_id):
@@ -282,63 +320,72 @@ async def telegram_webhook(
     bot_token = bot_data["token"]
     client = _get_http_client()
 
-    # Farm: отправляем ответ
+    # Farm: отправляем ответ в фоне
     if bot_data["role"] == BotRole.farm:
-        try:
-            await client.post(
-                f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                json={"chat_id": telegram_id, "text": farm_text, "parse_mode": "HTML"},
-            )
-        except Exception as e:
-            logger.error(f"Farm reply failed: {e}")
+        asyncio.create_task(
+            _send_farm_reply(client, bot_token, telegram_id, farm_text)
+        )
         return {"status": "farm_reply"}
 
-    # Welcome: отправляем в Telegram
+    # Welcome: отправляем в фоне
     if welcome_data:
-        try:
-            reply_markup = None
-            if welcome_data["buttons"] and isinstance(welcome_data["buttons"], list):
-                reply_markup = {
-                    "inline_keyboard": [
-                        [{"text": b["text"], "url": b["url"]}]
-                        for b in welcome_data["buttons"]
-                    ]
-                }
-
-            if welcome_data["photo_path"] and os.path.exists(welcome_data["photo_path"]):
-                with open(welcome_data["photo_path"], "rb") as photo_file:
-                    data_payload = {
-                        "chat_id": telegram_id,
-                        "caption": welcome_data["text"] or "",
-                        "parse_mode": "HTML",
-                    }
-                    if reply_markup:
-                        data_payload["reply_markup"] = json.dumps(reply_markup)
-
-                    response = await client.post(
-                        f"https://api.telegram.org/bot{bot_token}/sendPhoto",
-                        data=data_payload,
-                        files={"photo": photo_file},
-                    )
-                    if response.status_code != 200:
-                        logger.error(f"sendPhoto failed: {response.text}")
-
-            elif welcome_data["text"]:
-                payload = {
-                    "chat_id": telegram_id,
-                    "text": welcome_data["text"],
-                    "parse_mode": "HTML",
-                }
-                if reply_markup:
-                    payload["reply_markup"] = reply_markup
-
-                response = await client.post(
-                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    json=payload,
-                )
-                if response.status_code != 200:
-                    logger.error(f"sendMessage failed: {response.text}")
-        except Exception as e:
-            logger.error(f"Welcome send failed: {e}")
+        asyncio.create_task(
+            _send_welcome(client, bot_token, telegram_id, welcome_data)
+        )
 
     return {"status": "ok"}
+
+
+async def _send_farm_reply(client, bot_token, telegram_id, farm_text):
+    """Фоновая отправка farm-ответа."""
+    await _tg_request(
+        client, bot_token, "sendMessage",
+        json={"chat_id": telegram_id, "text": farm_text, "parse_mode": "HTML"},
+    )
+
+
+async def _send_welcome(client, bot_token, telegram_id, welcome_data):
+    """Фоновая отправка welcome-сообщения."""
+    try:
+        reply_markup = None
+        if welcome_data["buttons"] and isinstance(welcome_data["buttons"], list):
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": b["text"], "url": b["url"]}]
+                    for b in welcome_data["buttons"]
+                ]
+            }
+
+        if welcome_data["photo_path"] and os.path.exists(welcome_data["photo_path"]):
+            with open(welcome_data["photo_path"], "rb") as photo_file:
+                photo_bytes = photo_file.read()
+
+            data_payload = {
+                "chat_id": telegram_id,
+                "caption": welcome_data["text"] or "",
+                "parse_mode": "HTML",
+            }
+            if reply_markup:
+                data_payload["reply_markup"] = json.dumps(reply_markup)
+
+            await _tg_request(
+                client, bot_token, "sendPhoto",
+                data=data_payload,
+                files={"photo": ("photo", photo_bytes)},
+            )
+
+        elif welcome_data["text"]:
+            payload = {
+                "chat_id": telegram_id,
+                "text": welcome_data["text"],
+                "parse_mode": "HTML",
+            }
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+
+            await _tg_request(
+                client, bot_token, "sendMessage",
+                json=payload,
+            )
+    except Exception as e:
+        logger.error(f"Welcome send failed: {e}")

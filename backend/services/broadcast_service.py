@@ -1,26 +1,40 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, and_, func
 
 from backend.models.bot import Bot, BotRole, BotStatus
 from backend.models.broadcast import Broadcast, BroadcastStatus
 from backend.models.team import TeamMember
 
+STUCK_BROADCAST_TIMEOUT_MIN = 10
+
 
 async def get_scheduled_broadcasts(db: AsyncSession) -> list[dict]:
     now = datetime.utcnow()
+    stuck_threshold = now - timedelta(minutes=STUCK_BROADCAST_TIMEOUT_MIN)
 
     result = await db.execute(
         select(Broadcast, Bot)
         .join(Bot, Broadcast.bot_id == Bot.id)
         .where(
-            Broadcast.status == BroadcastStatus.scheduled,
             Bot.role.in_([BotRole.active, BotRole.farm]),
             Bot.status == BotStatus.alive,
             or_(
-                Broadcast.scheduled_at == None,
-                Broadcast.scheduled_at <= now
+                and_(
+                    Broadcast.status == BroadcastStatus.scheduled,
+                    or_(
+                        Broadcast.scheduled_at == None,
+                        Broadcast.scheduled_at <= now
+                    )
+                ),
+                and_(
+                    Broadcast.status == BroadcastStatus.sending,
+                    or_(
+                        Broadcast.started_at == None,
+                        Broadcast.started_at <= stuck_threshold
+                    )
+                ),
             )
         )
     )

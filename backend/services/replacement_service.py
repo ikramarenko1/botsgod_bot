@@ -76,10 +76,10 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
         pairs_count = min(len(group_dead), len(group_reserves))
 
         for i in range(pairs_count):
+            dead_bot = group_dead[i]
+            reserve_bot = group_reserves[i]
+            dead_bot_username = dead_bot.username
             try:
-                dead_bot = group_dead[i]
-                reserve_bot = group_reserves[i]
-
                 old_id = dead_bot.id
                 new_id = reserve_bot.id
 
@@ -108,7 +108,10 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                 reserve_bot.delayed_photo_path = dead_bot.delayed_photo_path
                 reserve_bot.auto_reply_text = dead_bot.auto_reply_text
                 reserve_bot.last_applied_region = dead_bot.last_applied_region
-                reserve_bot.last_applied_at = dead_bot.last_applied_at
+                _applied_at = dead_bot.last_applied_at
+                if _applied_at and _applied_at.tzinfo is not None:
+                    _applied_at = _applied_at.replace(tzinfo=None)
+                reserve_bot.last_applied_at = _applied_at
 
                 reserve_bot.role = BotRole.active
 
@@ -214,11 +217,12 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
             except Exception as e:
                 logger.error(
-                    f"Replacement failed for @{group_dead[i].username}: {e}"
+                    f"Replacement failed for @{dead_bot_username}: {e}",
+                    exc_info=True,
                 )
                 not_replaced.append({
-                    "dead_bot_id": group_dead[i].id,
-                    "dead_bot_username": group_dead[i].username,
+                    "dead_bot_id": dead_bot.id,
+                    "dead_bot_username": dead_bot_username,
                     "key_name": key_name,
                     "reason": "Replacement error"
                 })

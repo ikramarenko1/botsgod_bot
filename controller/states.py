@@ -81,5 +81,9 @@ class KeyRoleStates(StatesGroup):
     selecting_role = State()
 
 
+class AutoReplyStates(StatesGroup):
+    waiting_text = State()
+
+
 class TeamStates(StatesGroup):
     waiting_member_id = State()

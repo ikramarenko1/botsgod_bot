@@ -21,10 +21,19 @@ async def set_webhook(bot: Bot):
     url = f"{PUBLIC_WEBHOOK_BASE}/webhooks/{bot.id}"
 
     async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(
+        resp = await client.post(
             f"https://api.telegram.org/bot{bot.token}/setWebhook",
             json={"url": url},
         )
+
+    if resp.status_code != 200:
+        logger.error(f"setWebhook HTTP error for @{bot.username}: {resp.status_code} {resp.text}")
+        return
+
+    data = resp.json()
+    if not data.get("ok"):
+        logger.error(f"setWebhook failed for @{bot.username}: {data}")
+        return
 
     logger.debug(f"Webhook set for @{bot.username}")
 

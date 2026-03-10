@@ -8,10 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.db.session import get_db
-from backend.models.bot import Bot
+from backend.models.bot import Bot, BotRole
 from backend.models.user import BotUser
 from backend.utils.auth import verify_api_key
 from backend.services.replacement_service import run_replacement, get_replacement_logs_all
+from backend.services.telegram_service import set_webhook
 
 logger = logging.getLogger("stagecontrol")
 
@@ -25,7 +26,6 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 MEDIA_DIR = os.path.join(PROJECT_ROOT, "media")
 
-# Статус worker в памяти
 worker_status = {
     "last_heartbeat": None,
     "last_health_check": None,
@@ -118,6 +118,30 @@ async def replacement(
     _: None = Depends(verify_api_key),
 ):
     return await run_replacement(db, MEDIA_DIR)
+
+
+@router.post("/system/sync-webhooks")
+async def sync_webhooks(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
+    result = await db.execute(
+        select(Bot).where(Bot.role.in_([BotRole.active, BotRole.farm]))
+    )
+    bots = result.scalars().all()
+
+    synced = 0
+    errors = 0
+
+    for bot in bots:
+        try:
+            await set_webhook(bot)
+            synced += 1
+        except Exception as e:
+            logger.error(f"sync-webhooks: failed for @{bot.username}: {e}")
+            errors += 1
+
+    return {"synced": synced, "errors": errors, "total": len(bots)}
 
 
 @router.post("/controller/webhook")

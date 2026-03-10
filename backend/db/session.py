@@ -21,9 +21,6 @@ if not _is_sqlite:
 engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
-# Autocommit engine для hot-path (webhook): Connection без BEGIN/COMMIT.
-# Используется через _ac_engine.connect() (НЕ через Session).
-# Session игнорирует AUTOCOMMIT из-за autobegin, поэтому используем raw Connection.
 if not _is_sqlite:
     _ac_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
 else:

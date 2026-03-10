@@ -2,14 +2,13 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Позволяет запускать как `python controller/main.py`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from controller.config import BOT_TOKEN
-from controller.handlers import start, bots, welcome, delayed, broadcast, rename, avatar
+from controller.handlers import start, bots, welcome, delayed, broadcast, rename, avatar, auto_reply
 from controller.handlers import mass_broadcast, mass_role, keys, team
 
 bot = Bot(token=BOT_TOKEN)
@@ -25,7 +24,8 @@ dp.include_router(mass_broadcast.router)
 dp.include_router(mass_role.router)
 dp.include_router(keys.router)
 dp.include_router(team.router)
-dp.include_router(bots.router)  # последним — содержит catch-all bot_{id}
+dp.include_router(auto_reply.router)
+dp.include_router(bots.router)
 
 
 async def main():

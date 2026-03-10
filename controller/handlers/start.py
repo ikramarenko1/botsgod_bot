@@ -145,6 +145,40 @@ async def worker_status_handler(callback):
     await callback.answer()
 
 
+@router.callback_query(lambda c: c.data == "sync_webhooks")
+async def sync_webhooks_handler(callback):
+    await safe_edit(callback.message, "🔄 Синхронизация вебхуков...")
+    await callback.answer()
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{BACKEND_URL}/system/sync-webhooks",
+                headers={"X-API-KEY": INTERNAL_API_KEY},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        await safe_edit(callback.message, "❌ Ошибка синхронизации вебхуков.")
+        return
+
+    text = (
+        f"🔄 <b>Синхронизация вебхуков</b>\n\n"
+        f"✅ Синхронизировано: {data.get('synced', 0)}\n"
+        f"❌ Ошибок: {data.get('errors', 0)}\n"
+        f"📊 Всего ботов: {data.get('total', 0)}"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Повторить", callback_data="sync_webhooks")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
+        ]
+    )
+
+    await safe_edit(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
+
+
 @router.callback_query(lambda c: c.data == "back_to_main")
 async def back_to_main_handler(callback):
     await safe_edit(

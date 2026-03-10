@@ -24,7 +24,6 @@ def parse_utc3_input_to_utc_iso(text: str) -> str:
     if low in ("сейчас", "now"):
         return now_utc().replace(microsecond=0).isoformat()
 
-    # HH:MM
     if len(raw) == 5 and raw[2] == ":":
         hh, mm = raw.split(":")
         if not (hh.isdigit() and mm.isdigit()):
@@ -35,7 +34,6 @@ def parse_utc3_input_to_utc_iso(text: str) -> str:
             candidate = candidate + timedelta(days=1)
         return utc3_to_utc(candidate).replace(microsecond=0).isoformat()
 
-    # DD.MM.YYYY HH:MM
     dt_utc3 = datetime.strptime(raw, "%d.%m.%Y %H:%M").replace(second=0, microsecond=0)
     return utc3_to_utc(dt_utc3).replace(microsecond=0).isoformat()
 

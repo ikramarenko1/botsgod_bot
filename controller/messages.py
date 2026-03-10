@@ -2,8 +2,6 @@ from typing import Optional
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-# === Клавиатуры ===
-
 def bot_menu_keyboard(bot_id: str, role: str) -> InlineKeyboardMarkup:
     is_active = role == "active"
     is_disabled = role == "disabled"
@@ -19,6 +17,7 @@ def bot_menu_keyboard(bot_id: str, role: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📊 Статистика", callback_data=f"bot_{bot_id}_stats")],
             [InlineKeyboardButton(text="📩 Сообщение", callback_data=f"bot_{bot_id}_message")],
+            [InlineKeyboardButton(text="💬 Авто-ответ", callback_data=f"bot_{bot_id}_autoreply")],
             [InlineKeyboardButton(text="⏳ Отложенное сообщение", callback_data=f"bot_{bot_id}_delayed")],
             [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
             [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
@@ -32,8 +31,6 @@ def bot_menu_keyboard(bot_id: str, role: str) -> InlineKeyboardMarkup:
         ]
     )
 
-
-# === Тексты сообщений ===
 
 def bot_menu_text(bot_username: str, role: str, key_name: Optional[str] = None) -> str:
     role_lines = {

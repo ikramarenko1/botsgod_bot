@@ -124,7 +124,7 @@ async def rename_geo_group(callback, state: FSMContext):
     owner_id = callback.from_user.id
     parts = callback.data.split("_")
     bot_id = parts[1]
-    group = parts[-1]  # cis / west / asia
+    group = parts[-1]
 
     group_codes = [x["code"] for x in LANG_REGIONS if x["group"] == group]
 
@@ -317,7 +317,6 @@ async def rename_save_name(message, state: FSMContext):
         await state.clear()
         return
 
-    # Мульти-режим: применяем ко всем выбранным регионам
     selected = data.get("selected_regions") or []
     if not selected:
         await message.answer("❌ Регионы не выбраны.")

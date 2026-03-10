@@ -567,14 +567,14 @@ async def update_bot_role(
         try:
             from backend.services.telegram_service import set_webhook
             await set_webhook(bot)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to set webhook for bot {bot.id}: {e}")
     elif data.role in ("reserve", "disabled"):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(f"https://api.telegram.org/bot{bot.token}/deleteWebhook")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to delete webhook for bot {bot.id}: {e}")
 
     return BotResponse(
         id=bot.id,
@@ -624,6 +624,26 @@ async def disable_bot(
     await svc_disable_bot(db, bot)
     invalidate_bot_cache(bot.id)
     return {"status": "disabled"}
+
+
+@router.get("/bots/{bot_id}/auto-reply")
+async def get_auto_reply(
+    bot: Bot = Depends(get_owned_bot),
+):
+    return {"auto_reply_text": bot.auto_reply_text}
+
+
+@router.patch("/bots/{bot_id}/auto-reply")
+async def update_auto_reply(
+    data: dict,
+    bot: Bot = Depends(get_owned_bot),
+    db: AsyncSession = Depends(get_db),
+):
+    bot.auto_reply_text = data.get("text")
+    await db.commit()
+    await db.refresh(bot)
+    invalidate_bot_cache(bot.id)
+    return {"auto_reply_text": bot.auto_reply_text}
 
 
 @router.delete("/bots/{bot_id}")

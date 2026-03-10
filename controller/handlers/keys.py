@@ -191,8 +191,6 @@ async def _render_key_detail(callback, key_id: str, page: int = 0):
     await callback.answer()
 
 
-# === Добавить бота в ключ (по токенам) ===
-
 @router.callback_query(lambda c: "_add_bot" in c.data and c.data.startswith("key_") and c.data.split("_")[1].isdigit())
 async def key_add_bot_start(callback, state: FSMContext):
     key_id = callback.data.split("_")[1]
@@ -280,7 +278,6 @@ async def key_add_bot_role(callback, state: FSMContext):
             username = result.get("username")
             added.append({"id": bot_id, "username": username})
 
-            # Привязать к ключу
             try:
                 await backend_request(
                     "POST",
@@ -440,7 +437,6 @@ async def ka_done(callback, state: FSMContext):
     await state.clear()
     await callback.answer(f"Привязано ботов: {success}")
 
-    # Вернуться к деталям ключа
     try:
         key = await backend_request("GET", f"/keys/{key_id}", telegram_id=owner_id)
     except Exception:
@@ -551,8 +547,6 @@ async def key_delete_yes(callback):
     await safe_edit(callback.message, "✅ Ключ удалён.", reply_markup=kb)
     await callback.answer()
 
-
-# === Рассылка по ключу ===
 
 KBC_PREFIX = "kbc"
 
@@ -919,8 +913,6 @@ async def kbc_confirm(callback, state: FSMContext):
     await state.clear()
     await callback.answer("✅ Готово")
 
-
-# === Смена роли по ключу ===
 
 KR_PREFIX = "krl"
 

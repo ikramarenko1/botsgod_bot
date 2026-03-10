@@ -55,7 +55,6 @@ async def add_member(
     if data.telegram_id == owner_id:
         raise HTTPException(400, "Вы уже в команде")
 
-    # Проверяем что пользователь не в другой команде
     existing = await db.execute(
         select(TeamMember).where(TeamMember.telegram_id == data.telegram_id)
     )

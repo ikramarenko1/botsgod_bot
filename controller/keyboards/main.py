@@ -23,6 +23,7 @@ def main_menu_keyboard():
             [InlineKeyboardButton(text="🔎 Мои боты", callback_data="my_bots")],
             [InlineKeyboardButton(text="👥 Моя команда", callback_data="my_team")],
             [InlineKeyboardButton(text="🧠 Статус Worker", callback_data="worker_status")],
+            [InlineKeyboardButton(text="🔄 Синхронизировать вебхуки", callback_data="sync_webhooks")],
         ]
     )
 

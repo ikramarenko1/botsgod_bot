@@ -39,13 +39,11 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
     replacements = []
     not_replaced = []
 
-    # Пропускаем ботов без team_id (legacy/ошибка)
     valid_dead_bots = [b for b in dead_bots if b.team_id is not None]
     skipped = len(dead_bots) - len(valid_dead_bots)
     if skipped:
         logger.warning(f"Replacement: skipped {skipped} dead bots without team_id")
 
-    # Группируем dead ботов по (team_id, key_id)
     dead_by_group = defaultdict(list)
     for bot in valid_dead_bots:
         dead_by_group[(bot.team_id, bot.key_id)].append(bot)
@@ -58,7 +56,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
     logger.info(f"Replacement started: {len(dead_bots)} dead bots in {len(dead_by_group)} groups")
 
-    # Данные для HTTP-фазы, собираемые во время DB-фазы
     http_tasks = []
 
     for (group_team_id, key_id), group_dead in dead_by_group.items():
@@ -86,9 +83,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                 old_id = dead_bot.id
                 new_id = reserve_bot.id
 
-                # === ФАЗА 1: Все DB-операции ===
-
-                # Удаляем юзеров reserve-бота, которые дублируют юзеров dead-бота
                 existing_tg_ids = (await db.execute(
                     select(BotUser.telegram_id).where(BotUser.bot_id == old_id)
                 )).scalars().all()
@@ -112,12 +106,12 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                 reserve_bot.delayed_buttons = dead_bot.delayed_buttons
                 reserve_bot.delayed_delay_minutes = dead_bot.delayed_delay_minutes
                 reserve_bot.delayed_photo_path = dead_bot.delayed_photo_path
+                reserve_bot.auto_reply_text = dead_bot.auto_reply_text
                 reserve_bot.last_applied_region = dead_bot.last_applied_region
                 reserve_bot.last_applied_at = dead_bot.last_applied_at
 
                 reserve_bot.role = BotRole.active
 
-                # Читаем configs для HTTP-фазы
                 configs_result = await db.execute(
                     select(BotConfig).where(BotConfig.bot_id == reserve_bot.id)
                 )
@@ -131,7 +125,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                         payload_desc["language_code"] = cfg.region
                     config_payloads.append((cfg.region, payload_name, payload_desc))
 
-                # Копирование файлов
                 has_avatar = False
                 if dead_bot.avatar_path and os.path.exists(dead_bot.avatar_path):
                     new_bot_dir = os.path.join(media_dir, f"bot_{reserve_bot.id}")
@@ -163,7 +156,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                         shutil.copyfile(old_delayed_photo, new_delayed_photo)
                         reserve_bot.delayed_photo_path = new_delayed_photo
 
-                # Сохраняем данные для лога и уведомления до удаления
                 dead_username = dead_bot.username
                 dead_token = dead_bot.token
                 dead_team_id = dead_bot.team_id
@@ -190,7 +182,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                 )
                 db.add(log)
 
-                # Читаем members для уведомлений
                 member_ids = []
                 if dead_team_id:
                     members_result = await db.execute(
@@ -198,14 +189,12 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                     )
                     member_ids = members_result.scalars().all()
 
-                # Удаляем dead бота
                 old_media_dir = os.path.join(media_dir, f"bot_{old_id}")
                 if os.path.exists(old_media_dir):
                     shutil.rmtree(old_media_dir)
                 await db.delete(dead_bot)
                 await db.flush()
 
-                # Собираем задачу для HTTP-фазы
                 http_tasks.append({
                     "dead_token": dead_token,
                     "dead_username": dead_username,
@@ -247,11 +236,8 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                 })
 
     await db.commit()
-    # === DB-сессия больше не нужна ===
 
-    # === ФАЗА 2: Все HTTP-вызовы (Telegram API + уведомления) ===
     for task in http_tasks:
-        # deleteWebhook старого бота
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(
@@ -260,7 +246,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
         except Exception:
             pass
 
-        # apply configs
         applied_regions = []
         failed_regions = []
         for region, payload_name, payload_desc in task["config_payloads"]:
@@ -282,9 +267,7 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                     f"for @{task['reserve_username']}: {cfg_err}"
                 )
 
-        # apply avatar
         if task["has_avatar"] and task["reserve_avatar_path"] and os.path.exists(task["reserve_avatar_path"]):
-            # Создаём временный объект Bot для apply_avatar
             dummy_bot = Bot(
                 id=task["reserve_id"],
                 token=task["reserve_token"],
@@ -296,7 +279,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
             except Exception as e:
                 logger.error(f"Failed to apply avatar for @{task['reserve_username']}: {e}")
 
-        # set webhook
         try:
             dummy_bot = Bot(
                 id=task["reserve_id"],
@@ -307,7 +289,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
         except Exception as e:
             logger.error(f"Failed to set webhook for @{task['reserve_username']}: {e}")
 
-        # Логирование
         parts = [f"@{task['dead_username']} -> @{task['reserve_username']}"]
         if applied_regions:
             parts.append(f"{len(applied_regions)} configs applied")
@@ -317,7 +298,6 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
             parts.append("avatar copied")
         logger.info(f"Replaced: {', '.join(parts)}")
 
-        # Уведомления
         try:
             key_name = task["key_name"]
             key_line = f"▫️ Ключ: 🔑 {key_name}\n" if key_name else ""

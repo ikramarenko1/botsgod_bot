@@ -1,5 +1,7 @@
 import asyncio
 
+from sqlalchemy import text
+
 from backend.db.session import engine
 from backend.db.base import Base
 
@@ -18,5 +20,16 @@ from backend.models.team import Team, TeamMember
 async def init():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await migrate_auto_reply(engine)
+
+
+async def migrate_auto_reply(engine):
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            ALTER TABLE bots
+            ADD COLUMN IF NOT EXISTS auto_reply_text TEXT
+            DEFAULT 'Свяжитесь с нами по контактам в сообщении выше👆👆👆'
+        """))
+
 
 asyncio.run(init())

@@ -34,14 +34,8 @@ HEALTHCHECK_INTERVAL_SEC = 60
 REPLACEMENT_INTERVAL_SEC = 120
 WORKER_LOOP_DELAY = 10
 
-# Telegram лимит: 30 msg/sec на бота. Ставим 28 с запасом.
 BROADCAST_RATE_PER_BOT = 28
-# Глобальный лимит одновременных TCP-соединений к Telegram.
-# sendMessage = 2-3s на стороне Telegram (не contention).
-# 200 → 2.7s (74/sec), 600 → 5s (65/sec — contention).
-# 400 = sweet spot: ~3.2s, ~125/sec.
 BROADCAST_GLOBAL_CONCURRENCY = 400
-# Кол-во worker-корутин на бота.
 BROADCAST_WORKERS_PER_BOT = 40
 BROADCAST_PROGRESS_STEP = 1000
 
@@ -54,7 +48,6 @@ class BotRateLimiter:
         self._global_sem = global_sem
 
     async def acquire(self):
-        # Сначала rate (ожидание без ресурсов), потом TCP-слот
         await self._rate_sem.acquire()
         asyncio.get_running_loop().call_later(1.0, self._rate_sem.release)
         await self._global_sem.acquire()
@@ -186,7 +179,7 @@ async def _send_one_message(client: httpx.AsyncClient, limiter: BotRateLimiter,
             data = resp.json()
             retry_after = data.get("parameters", {}).get("retry_after", 1)
             logger.warning(f"[worker] broadcast 429, sleep {retry_after}s")
-            limiter.release()  # освободить TCP-слот ДО сна
+            limiter.release()
             released = True
             await asyncio.sleep(retry_after)
             return False
@@ -292,7 +285,6 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
 
     reply_markup = build_reply_markup(broadcast.get("buttons"))
 
-    # Загружаем данные по ботам (макс. 5 параллельно, чтобы не перегрузить backend)
     fetch_sem = asyncio.Semaphore(5)
 
     async def _fetch_bot_data(bot_id: int):
@@ -333,7 +325,6 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
     bot_jobs = [r for r in fetch_results if r is not None]
     total = sum(len(users) for _, users in bot_jobs)
 
-    # Один глобальный семафор на все боты — контролирует общее число TCP-соединений
     global_sem = asyncio.Semaphore(BROADCAST_GLOBAL_CONCURRENCY)
 
     progress = {"done": 0, "sent": 0, "failed": 0, "last_reported": 0, "total": total}
@@ -416,7 +407,6 @@ async def process_delayed(client: httpx.AsyncClient, msg: dict, _retries: int = 
                 ]
             }
 
-        # если есть фото
         if msg.get("photo_path") and os.path.exists(msg["photo_path"]):
 
             with open(msg["photo_path"], "rb") as photo_file:
@@ -450,7 +440,6 @@ async def process_delayed(client: httpx.AsyncClient, msg: dict, _retries: int = 
                 timeout=10,
             )
 
-            # Fallback для старых plain-text записей
             if resp.status_code == 400:
                 payload.pop("parse_mode", None)
                 resp = await client.post(
@@ -522,7 +511,6 @@ async def send_heartbeat(client: httpx.AsyncClient, did_health_check: bool, did_
 async def loop():
     logger.info("[worker] started")
 
-    # Connection pool: 400 для TG + запас для backend.
     limits = httpx.Limits(
         max_connections=500,
         max_keepalive_connections=400,

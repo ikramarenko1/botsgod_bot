@@ -21,6 +21,9 @@ class BotStatus(enum.Enum):
     dead = "dead"
 
 
+DEFAULT_AUTO_REPLY = "Свяжитесь с нами по контактам в сообщении выше👆👆👆"
+
+
 class Bot(Base):
     __tablename__ = "bots"
 
@@ -40,6 +43,7 @@ class Bot(Base):
     delayed_buttons: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     delayed_delay_minutes: Mapped[Optional[int]] = mapped_column(nullable=True)
     delayed_photo_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    auto_reply_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     configs = relationship(
         "BotConfig",

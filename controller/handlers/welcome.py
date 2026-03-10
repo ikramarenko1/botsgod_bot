@@ -1,4 +1,5 @@
 import os
+import logging
 
 import httpx
 from aiogram import Router
@@ -14,6 +15,8 @@ from controller.config import BACKEND_URL, BOT_TOKEN
 from controller.common import backend_request, owner_headers, parse_buttons_input
 from controller.render import render_welcome_menu
 from controller.states import WelcomeStates
+
+logger = logging.getLogger("stagecontrol")
 
 router = Router()
 
@@ -205,7 +208,7 @@ async def welcome_test(callback):
         await callback.answer("✅ Тест отправлен")
 
     except Exception as e:
-        print("TEST ERROR:", e)
+        logger.error(f"Welcome test error: {e}")
         await callback.answer("❌ Ошибка отправки теста")
 
 

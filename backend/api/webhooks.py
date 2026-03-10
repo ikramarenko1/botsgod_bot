@@ -23,25 +23,20 @@ router = APIRouter()
 
 DEFAULT_FARM_TEXT = "Здравствуйте! Спасибо за обращение."
 
-# === Кэши в памяти ===
-_bot_cache = {}  # bot_id -> (expire_time, data)
+_bot_cache = {}
 _BOT_CACHE_TTL = 60
 
-_farm_text_cache = {}  # key_id -> (expire_time, farm_text)
+_farm_text_cache = {}
 _FARM_TEXT_CACHE_TTL = 120
 
-_welcome_cache = {}  # bot_id -> (expire_time, data_or_None)
+_welcome_cache = {}
 _WELCOME_CACHE_TTL = 60
 
-# === Глобальный httpx клиент (переиспользует TCP-соединения) ===
 _http_client = None
 
-# Семафор: ограничивает параллельные обращения к БД из webhook.
-# Не даёт 30+ корутинам одновременно занять все соединения пула.
 _db_semaphore = asyncio.Semaphore(15)
 
 
-# Семафор: ограничивает параллельные отправки в Telegram API.
 _send_semaphore = asyncio.Semaphore(30)
 
 _MAX_RETRIES = 2
@@ -96,7 +91,6 @@ async def _get_bot_cached(bot_id):
         return cached[1]
 
     async with _db_semaphore:
-        # Перепроверяем после ожидания семафора
         cached = _bot_cache.get(bot_id)
         if cached and cached[0] > now:
             return cached[1]
@@ -106,6 +100,7 @@ async def _get_bot_cached(bot_id):
                 select(
                     Bot.id, Bot.token, Bot.role, Bot.key_id,
                     Bot.delayed_text, Bot.delayed_buttons, Bot.delayed_delay_minutes,
+                    Bot.auto_reply_text,
                 ).where(Bot.id == bot_id)
             )
             row = result.one_or_none()
@@ -120,6 +115,7 @@ async def _get_bot_cached(bot_id):
                 "delayed_text": row.delayed_text,
                 "delayed_buttons": row.delayed_buttons,
                 "delayed_delay_minutes": row.delayed_delay_minutes,
+                "auto_reply_text": row.auto_reply_text,
             }
     _bot_cache[bot_id] = (now + _BOT_CACHE_TTL, data)
     return data
@@ -227,15 +223,12 @@ async def telegram_webhook(
     is_start = text.startswith("/start")
     now = datetime.utcnow()
 
-    # === 1. Бот из кэша (обычно 0 запросов к БД) ===
     bot_data = await _get_bot_cached(bot_id)
     if not bot_data or bot_data["role"] == BotRole.disabled:
         raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
-    # === 2. Upsert пользователя — raw Connection, без Session ===
     user_id = None
     if _is_sqlite:
-        # SQLite: ORM-путь (только для локальной разработки)
         async with AsyncSessionLocal() as db:
             result = await db.execute(
                 select(BotUser).where(
@@ -265,7 +258,6 @@ async def telegram_webhook(
             user_id = user.id
             await db.commit()
     else:
-        # PostgreSQL: raw Connection + AUTOCOMMIT — без BEGIN/COMMIT
         stmt = pg_insert(BotUser).values(
             bot_id=bot_id,
             telegram_id=telegram_id,
@@ -289,12 +281,10 @@ async def telegram_webhook(
                 result = await conn.execute(stmt)
                 user_id = result.scalar_one()
 
-    # === 3. Farm: farm_text из кэша ===
     farm_text = DEFAULT_FARM_TEXT
     if bot_data["role"] == BotRole.farm and bot_data["key_id"]:
         farm_text = await _get_farm_text_cached(bot_data["key_id"])
 
-    # === 4. /start: welcome + delayed ===
     welcome_data = None
     if is_start and bot_data["role"] != BotRole.farm:
         welcome_data = await _get_welcome_cached(bot_id)
@@ -313,24 +303,27 @@ async def telegram_webhook(
                             status=DelayedStatus.pending,
                         )
                     )
-                    # SQLite требует явный commit (нет AUTOCOMMIT)
                     if _is_sqlite:
                         await conn.commit()
 
     bot_token = bot_data["token"]
     client = _get_http_client()
 
-    # Farm: отправляем ответ в фоне
     if bot_data["role"] == BotRole.farm:
         asyncio.create_task(
             _send_farm_reply(client, bot_token, telegram_id, farm_text)
         )
         return {"status": "farm_reply"}
 
-    # Welcome: отправляем в фоне
     if welcome_data:
         asyncio.create_task(
             _send_welcome(client, bot_token, telegram_id, welcome_data)
+        )
+
+    auto_reply = bot_data.get("auto_reply_text")
+    if auto_reply:
+        asyncio.create_task(
+            _send_auto_reply(client, bot_token, telegram_id, auto_reply)
         )
 
     return {"status": "ok"}
@@ -341,6 +334,14 @@ async def _send_farm_reply(client, bot_token, telegram_id, farm_text):
     await _tg_request(
         client, bot_token, "sendMessage",
         json={"chat_id": telegram_id, "text": farm_text, "parse_mode": "HTML"},
+    )
+
+
+async def _send_auto_reply(client, bot_token, telegram_id, text):
+    """Фоновая отправка авто-ответа."""
+    await _tg_request(
+        client, bot_token, "sendMessage",
+        json={"chat_id": telegram_id, "text": text, "parse_mode": "HTML"},
     )
 
 

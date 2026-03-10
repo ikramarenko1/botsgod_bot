@@ -322,7 +322,6 @@ async def mbc_confirm(callback, state: FSMContext):
         await state.clear()
         return
 
-    # Используем первый бот как bot_id для FK, bot_ids для списка
     first_bot_id = selected_ids[0]
 
     try:

@@ -6,7 +6,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
-from backend.models.bot import Bot, BotRole, BotStatus
+from backend.models.bot import Bot, BotRole, BotStatus, DEFAULT_AUTO_REPLY
 from backend.models.bot_config import BotConfig
 from backend.services.telegram_service import set_webhook
 
@@ -44,6 +44,7 @@ async def add_bot(db: AsyncSession, token: str, owner_id: int, media_dir: str, r
         status=BotStatus.alive,
         owner_telegram_id=owner_id,
         team_id=team_id,
+        auto_reply_text=DEFAULT_AUTO_REPLY,
     )
 
     db.add(bot)
@@ -112,20 +113,17 @@ async def health_check_bot(db: AsyncSession, bot: Bot) -> Bot:
 async def health_check_all(db: AsyncSession) -> list[dict]:
     logger.info("Health-check started")
 
-    # 1. Читаем ботов из БД — быстро
     result = await db.execute(
         select(Bot).where(Bot.role.in_([BotRole.active, BotRole.reserve]))
     )
     bots = result.scalars().all()
 
-    # Извлекаем данные, чтобы не зависеть от сессии во время HTTP
     bot_data = [(bot.id, bot.token, bot.username, bot.role.value) for bot in bots]
     await db.commit()
 
-    # 2. HTTP-проверки — долго, БД не трогаем
     checked = []
     counts = {"alive": 0, "dead": 0, "degraded": 0}
-    status_updates = {}  # bot_id -> new_status
+    status_updates = {}
 
     async with httpx.AsyncClient(timeout=10) as client:
         for bot_id, token, username, role in bot_data:
@@ -153,7 +151,6 @@ async def health_check_all(db: AsyncSession) -> list[dict]:
                 "status": new_status.value,
             })
 
-    # 3. Обновляем статусы в БД — bulk UPDATE (2-3 запроса вместо N)
     from backend.db.session import AsyncSessionLocal
     by_status = defaultdict(list)
     for bid, new_status in status_updates.items():

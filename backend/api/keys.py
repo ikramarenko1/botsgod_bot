@@ -131,7 +131,6 @@ async def delete_key(
     if not key or key.team_id != team_id:
         raise HTTPException(404, "Key not found")
 
-    # Отвязываем ботов
     result = await db.execute(select(Bot).where(Bot.key_id == key_id))
     bots = result.scalars().all()
     for b in bots:

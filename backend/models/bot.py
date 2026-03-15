@@ -44,6 +44,7 @@ class Bot(Base):
     delayed_delay_minutes: Mapped[Optional[int]] = mapped_column(nullable=True)
     delayed_photo_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     auto_reply_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_no_reserve_alert_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     configs = relationship(
         "BotConfig",

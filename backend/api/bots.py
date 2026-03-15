@@ -69,6 +69,7 @@ async def list_bots(
             status=b.status.value,
             key_id=b.key_id,
             key_name=keys_map.get(b.key_id) if b.key_id else None,
+            avatar_path=b.avatar_path,
         )
         for b in bots
     ]
@@ -441,7 +442,7 @@ async def apply_bot_config(
         )
 
     payload_name = {"name": config.name}
-    payload_desc = {"description": config.description}
+    payload_desc = {"short_description": config.description}
 
     if data.region != "default":
         payload_name["language_code"] = data.region
@@ -460,14 +461,14 @@ async def apply_bot_config(
             )
 
         resp_desc = await client.post(
-            f"https://api.telegram.org/bot{bot.token}/setMyDescription",
+            f"https://api.telegram.org/bot{bot.token}/setMyShortDescription",
             json=payload_desc,
         )
 
         if resp_desc.status_code != 200 or not resp_desc.json().get("ok"):
             raise HTTPException(
                 status_code=502,
-                detail="Failed to set bot description in Telegram",
+                detail="Failed to set bot short description in Telegram",
             )
 
     bot.last_applied_region = data.region
@@ -547,6 +548,36 @@ async def update_bot_avatar(
     return {"status": "avatar_updated"}
 
 
+@router.delete("/bots/{bot_id}/avatar")
+async def delete_bot_avatar(
+    bot: Bot = Depends(get_owned_bot),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{bot.token}/deleteMyProfilePhoto",
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Telegram HTTP error: {resp.text}")
+
+    data = resp.json()
+    if not data.get("ok"):
+        raise HTTPException(502, f"Telegram error: {resp.text}")
+
+    if bot.avatar_path and os.path.exists(bot.avatar_path):
+        try:
+            os.remove(bot.avatar_path)
+        except Exception as e:
+            logger.warning(f"Failed to remove avatar file: {e}")
+
+    bot.avatar_path = None
+    await db.commit()
+
+    return {"status": "avatar_deleted"}
+
+
 @router.patch("/bots/{bot_id}/role", response_model=BotResponse)
 async def update_bot_role(
     data: BotRoleUpdateRequest,
@@ -562,6 +593,19 @@ async def update_bot_role(
     await db.refresh(bot)
 
     invalidate_bot_cache(bot.id)
+
+    # Применить глобальный конфиг если роль сменилась на active
+    if data.role == "active" and bot.team_id:
+        try:
+            from backend.services.global_config_service import get_active_global_config, apply_global_config_to_bot
+            gc = await get_active_global_config(db, bot.team_id)
+            if gc:
+                skipped = await apply_global_config_to_bot(db, bot, gc, MEDIA_DIR)
+                await db.commit()
+                if skipped:
+                    logger.info(f"Global config: @{bot.username} skipped fields: {skipped}")
+        except Exception as e:
+            logger.error(f"Global config apply on role change failed: {e}")
 
     if data.role in ("active", "farm"):
         try:
@@ -644,6 +688,36 @@ async def update_auto_reply(
     await db.refresh(bot)
     invalidate_bot_cache(bot.id)
     return {"auto_reply_text": bot.auto_reply_text}
+
+
+@router.post("/bots/sync-webhooks")
+async def sync_webhooks_for_user(
+    team_id: int = Depends(get_user_team_id),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
+    from backend.services.telegram_service import set_webhook
+
+    result = await db.execute(
+        select(Bot).where(
+            Bot.team_id == team_id,
+            Bot.role.in_([BotRole.active, BotRole.farm]),
+        )
+    )
+    bots = result.scalars().all()
+
+    synced = 0
+    errors = 0
+
+    for bot in bots:
+        try:
+            await set_webhook(bot)
+            synced += 1
+        except Exception as e:
+            logger.error(f"sync-webhooks: failed for @{bot.username}: {e}")
+            errors += 1
+
+    return {"synced": synced, "errors": errors, "total": len(bots)}
 
 
 @router.delete("/bots/{bot_id}")

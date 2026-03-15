@@ -1,28 +1,32 @@
 import httpx
 from aiogram import Router
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
 from controller.config import BACKEND_URL, BOT_TOKEN
-from controller.common import owner_headers
+from controller.common import owner_headers, backend_request
 from controller.states import AvatarStates
 
 router = Router()
 
 
-@router.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_avatar"))
+@router.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_avatar") and "_avatar_delete" not in c.data)
 async def avatar_start(callback, state: FSMContext):
     bot_id = callback.data.split("_")[1]
 
     await state.update_data(bot_id=bot_id)
     await state.set_state(AvatarStates.waiting_photo)
 
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bot_{bot_id}")],
+    ])
+
     await callback.message.answer(
         "🖼 <b>Изменение фото бота</b>\n\n"
         "Отправьте фото которое будет использоваться как аватар бота.",
-        parse_mode="HTML"
+        reply_markup=keyboard,
+        parse_mode="HTML",
     )
-
     await callback.answer()
 
 
@@ -87,3 +91,51 @@ async def avatar_save(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
     await state.clear()
+
+
+@router.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_avatar_delete") and "_avatar_delete_confirm" not in c.data)
+async def avatar_delete_ask(callback: CallbackQuery):
+    bot_id = callback.data.split("_")[1]
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"bot_{bot_id}_avatar_delete_confirm")],
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"bot_{bot_id}")],
+    ])
+
+    await callback.message.edit_text(
+        "🗑 <b>Удалить фото бота?</b>\n\n"
+        "Фото профиля бота будет удалено.",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_avatar_delete_confirm"))
+async def avatar_delete_confirm(callback: CallbackQuery):
+    bot_id = callback.data.split("_")[1]
+    owner_id = callback.from_user.id
+
+    try:
+        await backend_request(
+            "DELETE",
+            f"/bots/{bot_id}/avatar",
+            telegram_id=owner_id,
+            with_api_key=True,
+        )
+    except Exception:
+        await callback.answer("❌ Ошибка удаления фото", show_alert=True)
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ Настройки бота", callback_data=f"bot_{bot_id}")],
+    ])
+
+    await callback.message.edit_text(
+        "✅ <b>Фото бота удалено!</b>",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+

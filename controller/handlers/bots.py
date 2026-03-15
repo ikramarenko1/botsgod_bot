@@ -12,12 +12,18 @@ from controller.messages import stats_text, replacement_logs_text, export_text
 router = Router()
 
 
-@router.callback_query(lambda c: c.data.startswith("bot_") and "_" not in c.data[4:])
+@router.callback_query(lambda c: c.data.startswith("bot_") and ("_" not in c.data[4:] or "_fk_" in c.data))
 async def bot_manage_handler(callback):
     owner_id = callback.from_user.id
-    bot_id = callback.data.split("_")[1]
+    parts = callback.data.split("_fk_")
+    bot_id = parts[0].split("_")[1]
 
-    await render_bot_menu(callback.message, owner_id, bot_id, edit=True)
+    if len(parts) > 1:
+        back_callback = f"key_{parts[1]}"
+    else:
+        back_callback = "my_bots"
+
+    await render_bot_menu(callback.message, owner_id, bot_id, edit=True, back_callback=back_callback)
     await callback.answer()
 
 

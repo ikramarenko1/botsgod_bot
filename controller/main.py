@@ -9,7 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from controller.config import BOT_TOKEN
 from controller.handlers import start, bots, welcome, delayed, broadcast, rename, avatar, auto_reply
-from controller.handlers import mass_broadcast, mass_role, keys, team
+from controller.handlers import mass_broadcast, mass_role, keys, team, global_config
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -25,6 +25,7 @@ dp.include_router(mass_role.router)
 dp.include_router(keys.router)
 dp.include_router(team.router)
 dp.include_router(auto_reply.router)
+dp.include_router(global_config.router)
 dp.include_router(bots.router)
 
 

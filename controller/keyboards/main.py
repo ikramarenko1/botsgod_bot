@@ -21,6 +21,7 @@ def main_menu_keyboard():
         inline_keyboard=[
             [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="my_keys")],
             [InlineKeyboardButton(text="🔎 Мои боты", callback_data="my_bots")],
+            [InlineKeyboardButton(text="⚙️ Глобальные конфиги", callback_data="global_configs")],
             [InlineKeyboardButton(text="👥 Моя команда", callback_data="my_team")],
             [InlineKeyboardButton(text="🧠 Статус Worker", callback_data="worker_status")],
             [InlineKeyboardButton(text="🔄 Синхронизировать вебхуки", callback_data="sync_webhooks")],
@@ -90,6 +91,27 @@ def bots_checkbox_keyboard(
         InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback),
     ])
 
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def gc_region_picker_keyboard(config_id: str, already_added_codes: set[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    groups = {"cis": "СНГ", "west": "Запад", "asia": "Азия"}
+    for group_key, group_title in groups.items():
+        group_items = [item for item in LANG_REGIONS if item["group"] == group_key]
+        grid = []
+        for item in group_items:
+            code = item["code"]
+            flag = item["flag"]
+            if code in already_added_codes:
+                grid.append(InlineKeyboardButton(text=f"✅ {flag}", callback_data="noop"))
+            else:
+                grid.append(InlineKeyboardButton(text=flag, callback_data=f"gcr_{config_id}_{code}"))
+        for i in range(0, len(grid), 3):
+            rows.append(grid[i:i+3])
+
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gc_{config_id}_regions")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

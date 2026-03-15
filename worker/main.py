@@ -132,11 +132,8 @@ async def call_replacement(client: httpx.AsyncClient):
 
 async def _send_one_message(client: httpx.AsyncClient, limiter: BotRateLimiter,
                             bot_token: str, user_tid: int,
-                            text: str, reply_markup: Optional[dict],
-                            diag: Optional[dict] = None) -> bool:
-    t0 = asyncio.get_running_loop().time()
+                            text: str, reply_markup: Optional[dict]) -> bool:
     await limiter.acquire()
-    t1 = asyncio.get_running_loop().time()
     released = False
     try:
         payload = {
@@ -152,20 +149,6 @@ async def _send_one_message(client: httpx.AsyncClient, limiter: BotRateLimiter,
             json=payload,
             timeout=10,
         )
-        t2 = asyncio.get_running_loop().time()
-
-        # Диагностика: собираем timing первых 200 сообщений
-        if diag is not None and diag["count"] < 200:
-            diag["count"] += 1
-            diag["acquire_total"] += (t1 - t0)
-            diag["http_total"] += (t2 - t1)
-            if diag["count"] == 200:
-                avg_acq = diag["acquire_total"] / 200
-                avg_http = diag["http_total"] / 200
-                logger.info(
-                    f"[worker] DIAG: avg acquire={avg_acq:.3f}s, "
-                    f"avg http={avg_http:.3f}s (over 200 sends)"
-                )
 
         if resp.status_code == 400:
             payload.pop("parse_mode", None)
@@ -221,7 +204,6 @@ async def _send_for_bot(client: httpx.AsyncClient, broadcast_id: int,
     queue = asyncio.Queue()
     sent = 0
     failed = 0
-    diag = {"count": 0, "acquire_total": 0.0, "http_total": 0.0}
 
     for u in users:
         queue.put_nowait(u["telegram_id"])
@@ -235,7 +217,7 @@ async def _send_for_bot(client: httpx.AsyncClient, broadcast_id: int,
                 break
 
             result = await _send_one_message(
-                client, limiter, bot_token, tid, text, reply_markup, diag
+                client, limiter, bot_token, tid, text, reply_markup
             )
             if result:
                 sent += 1
@@ -273,7 +255,10 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
 
     notify_ids = broadcast.get("notify_ids") or [broadcast["owner_id"]]
     for nid in notify_ids:
-        await notify_owner(client, nid, f"🚀 <b>Рассылка #{broadcast_id} началась</b>")
+        try:
+            await notify_owner(client, nid, f"🚀 <b>Рассылка #{broadcast_id} началась</b>")
+        except Exception as e:
+            logger.error(f"[worker] notify {nid} failed: {type(e).__name__}: {e}")
 
     await client.patch(
         f"{BACKEND_URL}/broadcasts/{broadcast_id}/stats",
@@ -282,6 +267,10 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
     )
 
     target_bot_ids = list(dict.fromkeys(broadcast.get("bot_ids") or [broadcast["bot_id"]]))
+
+    bot_usernames = broadcast.get("bot_usernames", {})
+    bot_names_list = [f"@{bot_usernames.get(bid, bot_usernames.get(str(bid), bid))}" for bid in target_bot_ids]
+    bot_names_str = ", ".join(bot_names_list)
 
     reply_markup = build_reply_markup(broadcast.get("buttons"))
 
@@ -367,13 +356,17 @@ async def process_broadcast(client: httpx.AsyncClient, broadcast: dict):
 
     finish_text = (
         f"<b>Рассылка #{broadcast_id} завершена</b>\n\n"
+        f"🤖 Боты: {bot_names_str}\n"
         f"👥 Всего: {total}\n"
         f"✅ Отправлено: {sent}\n"
         f"❌ Ошибок: {failed}\n"
         f"📡 Статус: {final_status}"
     )
     for nid in notify_ids:
-        await notify_owner(client, nid, finish_text)
+        try:
+            await notify_owner(client, nid, finish_text)
+        except Exception as e:
+            logger.error(f"[worker] notify {nid} failed: {type(e).__name__}: {e}")
 
     logger.info(
         f"[worker] broadcast {broadcast_id} done: {sent}/{total} sent, {failed} failed"

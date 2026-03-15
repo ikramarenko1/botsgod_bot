@@ -51,7 +51,15 @@ async def get_scheduled_broadcasts(db: AsyncSession) -> list[dict]:
             "text": broadcast.text,
             "buttons": broadcast.buttons,
             "token": bot.token,
+            "bot_username": bot.username,
         }
+        if broadcast.bot_ids:
+            bots_result = await db.execute(
+                select(Bot.id, Bot.username).where(Bot.id.in_(broadcast.bot_ids))
+            )
+            entry["bot_usernames"] = {row[0]: row[1] for row in bots_result.all()}
+        else:
+            entry["bot_usernames"] = {broadcast.bot_id: bot.username}
         if bot.team_id:
             members_result = await db.execute(
                 select(TeamMember.telegram_id).where(TeamMember.team_id == bot.team_id)

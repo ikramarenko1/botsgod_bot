@@ -74,6 +74,17 @@ async def add_bot(db: AsyncSession, token: str, owner_id: int, media_dir: str, r
     except Exception:
         pass
 
+    # Применить глобальный конфиг если бот активный
+    if role == "active" and team_id:
+        try:
+            from backend.services.global_config_service import get_active_global_config, apply_global_config_to_bot
+            gc = await get_active_global_config(db, team_id)
+            if gc:
+                await apply_global_config_to_bot(db, bot, gc, media_dir)
+                await db.commit()
+        except Exception as e:
+            logger.error(f"Global config apply on add_bot failed: {e}")
+
     if role in ("active", "farm"):
         try:
             async with httpx.AsyncClient(timeout=10) as client:

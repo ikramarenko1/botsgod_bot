@@ -315,16 +315,17 @@ async def telegram_webhook(
         )
         return {"status": "farm_reply"}
 
-    if welcome_data:
-        asyncio.create_task(
-            _send_welcome(client, bot_token, telegram_id, welcome_data)
-        )
-
-    auto_reply = bot_data.get("auto_reply_text")
-    if auto_reply:
-        asyncio.create_task(
-            _send_auto_reply(client, bot_token, telegram_id, auto_reply)
-        )
+    if is_start:
+        # На /start — только приветствие, без авто-ответа
+        if welcome_data:
+            await _send_welcome(client, bot_token, telegram_id, welcome_data)
+    else:
+        # На обычные сообщения — только авто-ответ
+        auto_reply = bot_data.get("auto_reply_text")
+        if auto_reply:
+            asyncio.create_task(
+                _send_auto_reply(client, bot_token, telegram_id, auto_reply)
+            )
 
     return {"status": "ok"}
 

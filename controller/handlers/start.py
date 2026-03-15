@@ -147,14 +147,15 @@ async def worker_status_handler(callback):
 
 @router.callback_query(lambda c: c.data == "sync_webhooks")
 async def sync_webhooks_handler(callback):
+    owner_id = callback.from_user.id
     await safe_edit(callback.message, "🔄 Синхронизация вебхуков...")
     await callback.answer()
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
-                f"{BACKEND_URL}/system/sync-webhooks",
-                headers={"X-API-KEY": INTERNAL_API_KEY},
+                f"{BACKEND_URL}/bots/sync-webhooks",
+                headers=owner_headers(owner_id, with_api_key=True),
             )
             resp.raise_for_status()
             data = resp.json()

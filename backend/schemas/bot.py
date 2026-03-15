@@ -14,6 +14,7 @@ class BotResponse(BaseModel):
     status: str
     key_id: Optional[int] = None
     key_name: Optional[str] = None
+    avatar_path: Optional[str] = None
 
 
 class BotListResponse(BaseModel):

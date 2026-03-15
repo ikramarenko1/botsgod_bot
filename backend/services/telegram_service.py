@@ -51,7 +51,7 @@ async def apply_last_config(db: AsyncSession, bot: Bot, region: str):
         return
 
     payload_name = {"name": config.name}
-    payload_desc = {"description": config.description}
+    payload_desc = {"short_description": config.description}
 
     if region != "default":
         payload_name["language_code"] = region
@@ -64,7 +64,7 @@ async def apply_last_config(db: AsyncSession, bot: Bot, region: str):
         )
 
         await client.post(
-            f"https://api.telegram.org/bot{bot.token}/setMyDescription",
+            f"https://api.telegram.org/bot{bot.token}/setMyShortDescription",
             json=payload_desc,
         )
 

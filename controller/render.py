@@ -159,7 +159,7 @@ async def render_delayed_menu(
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
-async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bool = False):
+async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bool = False, back_callback: str = "my_bots"):
     try:
         bots = await backend_request("GET", "/bots", telegram_id=owner_id)
     except Exception:
@@ -175,7 +175,8 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
 
     role = bot_obj.get("role", "active")
     key_name = bot_obj.get("key_name")
-    keyboard = bot_menu_keyboard(bot_id, role)
+    has_avatar = bool(bot_obj.get("avatar_path"))
+    keyboard = bot_menu_keyboard(bot_id, role, back_callback=back_callback, has_avatar=has_avatar)
     text = bot_menu_text(bot_username, role, key_name=key_name)
 
     if edit:
@@ -184,7 +185,7 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
         await message.answer(text, reply_markup=keyboard)
 
 
-async def render_bot_menu_by_id(bot: Bot, chat_id: int, owner_id: int, bot_id: str, message_id: int):
+async def render_bot_menu_by_id(bot: Bot, chat_id: int, owner_id: int, bot_id: str, message_id: int, back_callback: str = "my_bots"):
     try:
         bots = await backend_request("GET", "/bots", telegram_id=owner_id)
     except Exception:
@@ -200,7 +201,8 @@ async def render_bot_menu_by_id(bot: Bot, chat_id: int, owner_id: int, bot_id: s
 
     role = bot_obj.get("role", "active")
     key_name = bot_obj.get("key_name")
-    keyboard = bot_menu_keyboard(bot_id, role)
+    has_avatar = bool(bot_obj.get("avatar_path"))
+    keyboard = bot_menu_keyboard(bot_id, role, back_callback=back_callback, has_avatar=has_avatar)
 
     await safe_edit_by_id(
         bot,

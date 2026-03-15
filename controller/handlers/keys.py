@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from controller.common import backend_request, safe_edit, safe_edit_by_id, safe_delete_message
 from controller.keyboards.main import bots_checkbox_keyboard, BOTS_PER_PAGE, _pagination_row
 from controller.utils import parse_utc3_input_to_utc_iso, utc_iso_to_utc3_human, buttons_status
-from controller.states import KeyStates, KeyAddBotStates, KeyBroadcastStates, KeyRoleStates
+from controller.states import KeyStates, KeyAddBotStates, KeyBroadcastStates, KeyRoleStates, MassDeleteStates
 
 router = Router()
 
@@ -163,7 +163,7 @@ async def _render_key_detail(callback, key_id: str, page: int = 0):
         icon = role_icons.get(b['role'], '🤖')
         rows.append([InlineKeyboardButton(
             text=f"{icon} @{b['username']}",
-            callback_data=f"bot_{b['id']}"
+            callback_data=f"bot_{b['id']}_fk_{key_id}"
         )])
 
     if total_pages > 1:
@@ -178,11 +178,14 @@ async def _render_key_detail(callback, key_id: str, page: int = 0):
             InlineKeyboardButton(text="📢 Рассылка", callback_data=f"key_{key_id}_broadcast"),
             InlineKeyboardButton(text="🔄 Смена роли", callback_data=f"key_{key_id}_mass_role"),
         ],
-        [
+		[
             InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"key_{key_id}_rename"),
-            InlineKeyboardButton(text="🗑 Удалить ключ", callback_data=f"key_{key_id}_delete")
+            InlineKeyboardButton(text="🔄 Настроить farm-текст", callback_data=f"key_{key_id}_farm")
         ],
-        [InlineKeyboardButton(text="🔄 Настроить farm-текст", callback_data=f"key_{key_id}_farm")],
+        [
+            InlineKeyboardButton(text="🗑 Массовое удаление", callback_data=f"key_{key_id}_mass_delete"),
+			InlineKeyboardButton(text="🗑 Удалить ключ", callback_data=f"key_{key_id}_delete")
+        ],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="my_keys")],
     ]
 
@@ -511,7 +514,7 @@ async def key_farm_save(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(lambda c: "_delete" in c.data and c.data.startswith("key_") and c.data.split("_")[1].isdigit() and "yes" not in c.data)
+@router.callback_query(lambda c: "_delete" in c.data and c.data.startswith("key_") and c.data.split("_")[1].isdigit() and "yes" not in c.data and "mass_delete" not in c.data)
 async def key_delete_confirm(callback):
     key_id = callback.data.split("_")[1]
 
@@ -1073,6 +1076,167 @@ async def krl_apply_role(callback, state: FSMContext):
         f"Новая роль: {role_labels.get(role, role)}\n",
         f"✅ Успешно: {success}",
     ]
+    if failed:
+        lines.append(f"❌ Ошибок: {failed}")
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔑 К ключу", callback_data=f"key_{key_id}")],
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_to_main")],
+        ]
+    )
+
+    await safe_edit(callback.message, "\n".join(lines), reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+    await state.clear()
+
+
+# --- Mass Delete ---
+
+KMD_PREFIX = "kmd"
+
+
+@router.callback_query(lambda c: "_mass_delete" in c.data and c.data.startswith("key_") and c.data.split("_")[1].isdigit())
+async def key_mass_delete_start(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    key_id = callback.data.split("_")[1]
+    await state.clear()
+
+    try:
+        key = await backend_request("GET", f"/keys/{key_id}", telegram_id=owner_id)
+    except Exception:
+        await safe_edit(callback.message, "Ошибка загрузки.")
+        await callback.answer()
+        return
+
+    bots = key.get("bots", [])
+
+    if not bots:
+        await callback.answer("Нет ботов в этом ключе", show_alert=True)
+        return
+
+    await state.update_data(key_id=key_id, bots=bots, selected_ids=set())
+    await state.set_state(MassDeleteStates.selecting_bots)
+
+    kb = bots_checkbox_keyboard(KMD_PREFIX, bots, set(), back_callback=f"key_{key_id}")
+    await safe_edit(
+        callback.message,
+        f"🗑 <b>Массовое удаление — ключ {key['short_name']}</b>\n\nВыберите ботов для удаления:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(MassDeleteStates.selecting_bots, lambda c: c.data.startswith(f"{KMD_PREFIX}_page_"))
+async def kmd_page(callback, state: FSMContext):
+    page = int(callback.data.split("_")[-1])
+    data = await state.get_data()
+    key_id = data["key_id"]
+    selected = set(data.get("selected_ids", set()))
+    await state.update_data(page=page)
+    kb = bots_checkbox_keyboard(KMD_PREFIX, data["bots"], selected, back_callback=f"key_{key_id}", page=page)
+    await safe_edit(callback.message, f"🗑 Выбрано: {len(selected)}", reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(MassDeleteStates.selecting_bots, lambda c: c.data.startswith(f"{KMD_PREFIX}_toggle_"))
+async def kmd_toggle(callback, state: FSMContext):
+    bot_id = int(callback.data.split("_")[-1])
+    data = await state.get_data()
+    selected = set(data.get("selected_ids", set()))
+    key_id = data["key_id"]
+    page = data.get("page", 0)
+
+    if bot_id in selected:
+        selected.discard(bot_id)
+    else:
+        selected.add(bot_id)
+
+    await state.update_data(selected_ids=selected)
+    kb = bots_checkbox_keyboard(KMD_PREFIX, data["bots"], selected, back_callback=f"key_{key_id}", page=page)
+    await safe_edit(callback.message, f"🗑 Выбрано: {len(selected)}", reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(MassDeleteStates.selecting_bots, lambda c: c.data == f"{KMD_PREFIX}_select_all")
+async def kmd_select_all(callback, state: FSMContext):
+    data = await state.get_data()
+    selected = {b["id"] for b in data["bots"]}
+    key_id = data["key_id"]
+    page = data.get("page", 0)
+    await state.update_data(selected_ids=selected)
+    kb = bots_checkbox_keyboard(KMD_PREFIX, data["bots"], selected, back_callback=f"key_{key_id}", page=page)
+    await safe_edit(callback.message, f"🗑 Выбрано: {len(selected)}", reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(MassDeleteStates.selecting_bots, lambda c: c.data == f"{KMD_PREFIX}_reset")
+async def kmd_reset(callback, state: FSMContext):
+    data = await state.get_data()
+    key_id = data["key_id"]
+    await state.update_data(selected_ids=set(), page=0)
+    kb = bots_checkbox_keyboard(KMD_PREFIX, data["bots"], set(), back_callback=f"key_{key_id}")
+    await safe_edit(callback.message, "🗑 Выберите ботов для удаления:", reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(MassDeleteStates.selecting_bots, lambda c: c.data == f"{KMD_PREFIX}_done")
+async def kmd_done_selecting(callback, state: FSMContext):
+    data = await state.get_data()
+    selected = data.get("selected_ids", set())
+    key_id = data["key_id"]
+
+    if not selected:
+        await callback.answer("Выберите хотя бы одного бота", show_alert=True)
+        return
+
+    bot_names = [f"@{b['username']}" for b in data["bots"] if b["id"] in selected]
+    names_str = "\n".join(f"  • {n}" for n in bot_names)
+
+    await state.set_state(MassDeleteStates.confirming)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data="kmd_confirm_yes")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"key_{key_id}")],
+        ]
+    )
+
+    await safe_edit(
+        callback.message,
+        f"⚠️ <b>Удалить {len(selected)} ботов?</b>\n\n"
+        f"{names_str}\n\n"
+        f"Это действие <b>нельзя отменить</b>.",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(MassDeleteStates.confirming, lambda c: c.data == "kmd_confirm_yes")
+async def kmd_confirm(callback, state: FSMContext):
+    owner_id = callback.from_user.id
+    data = await state.get_data()
+    selected_ids = list(data.get("selected_ids", []))
+    key_id = data["key_id"]
+
+    success = 0
+    failed = 0
+
+    for bot_id in selected_ids:
+        try:
+            await backend_request(
+                "DELETE",
+                f"/bots/{bot_id}",
+                telegram_id=owner_id,
+                with_api_key=True,
+            )
+            success += 1
+        except Exception:
+            failed += 1
+
+    lines = [f"🗑 <b>Результат удаления</b>\n", f"✅ Удалено: {success}"]
     if failed:
         lines.append(f"❌ Ошибок: {failed}")
 

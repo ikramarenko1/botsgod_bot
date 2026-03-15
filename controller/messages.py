@@ -2,7 +2,7 @@ from typing import Optional
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-def bot_menu_keyboard(bot_id: str, role: str) -> InlineKeyboardMarkup:
+def bot_menu_keyboard(bot_id: str, role: str, back_callback: str = "my_bots", has_avatar: bool = False) -> InlineKeyboardMarkup:
     is_active = role == "active"
     is_disabled = role == "disabled"
 
@@ -22,12 +22,13 @@ def bot_menu_keyboard(bot_id: str, role: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
             [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
             [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"bot_{bot_id}_rename")],
-            [InlineKeyboardButton(text="🖼 Изменить фото", callback_data=f"bot_{bot_id}_avatar")],
+            [InlineKeyboardButton(text="🖼 Изменить фото", callback_data=f"bot_{bot_id}_avatar")] +
+            ([InlineKeyboardButton(text="🗑 Удалить фото", callback_data=f"bot_{bot_id}_avatar_delete")] if has_avatar else []),
             [InlineKeyboardButton(text=toggle_text, callback_data=toggle_data)],
             [InlineKeyboardButton(text="📜 Логи замены", callback_data=f"bot_{bot_id}_replacement_logs")],
             [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
             [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="my_bots")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)]
         ]
     )
 
@@ -177,11 +178,16 @@ def broadcast_detail_text(
     total_users: int = 0,
     sent_count: int = 0,
     failed_count: int = 0,
+    bot_names: Optional[str] = None,
 ) -> str:
     lines = [
         "📨 <b>Рассылка</b>\n",
         f"🆔 ID: <code>{broadcast_id}</code>",
         f"📡 Статус: <b>{status}</b>",
+    ]
+    if bot_names:
+        lines.append(f"🤖 Боты: {bot_names}")
+    lines += [
         f"⏳ Запланировано: <b>{scheduled_at_human}</b> (UTC+3)",
         f"🔗 Кнопки: {buttons_flag}",
     ]

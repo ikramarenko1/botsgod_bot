@@ -12,7 +12,7 @@ logger = logging.getLogger("stagecontrol")
 router = Router()
 
 
-@router.callback_query(lambda c: c.data.endswith("_autoreply"))
+@router.callback_query(lambda c: c.data.endswith("_autoreply") and not c.data.startswith("gc_"))
 async def autoreply_menu(callback):
     owner_id = callback.from_user.id
     bot_id = callback.data.split("_")[1]

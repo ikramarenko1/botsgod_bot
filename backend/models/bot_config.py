@@ -19,7 +19,7 @@ class BotConfig(Base):
     region: Mapped[str] = mapped_column(String(32))
 
     name: Mapped[str] = mapped_column(String(255))
-    description: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
 
     bot = relationship("Bot", back_populates="configs")
 

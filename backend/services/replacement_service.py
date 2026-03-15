@@ -2,7 +2,7 @@ import os
 import shutil
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,8 @@ from backend.models.team import TeamMember
 from backend.services.notification_service import notify_admin, notify_owner, notify_team_members
 
 logger = logging.getLogger("stagecontrol")
+
+NO_RESERVE_ALERT_COOLDOWN = timedelta(hours=1)
 
 
 async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
@@ -122,7 +124,7 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                 config_payloads = []
                 for cfg in configs:
                     payload_name = {"name": cfg.name}
-                    payload_desc = {"description": cfg.description}
+                    payload_desc = {"short_description": cfg.description}
                     if cfg.region != "default":
                         payload_name["language_code"] = cfg.region
                         payload_desc["language_code"] = cfg.region
@@ -229,14 +231,46 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
 
         if len(group_dead) > pairs_count:
             for dead_bot in group_dead[pairs_count:]:
+                now = datetime.utcnow()
+                throttled = (
+                    dead_bot.last_no_reserve_alert_at is not None
+                    and (now - dead_bot.last_no_reserve_alert_at) < NO_RESERVE_ALERT_COOLDOWN
+                )
+
+                if not throttled:
+                    dead_bot.last_no_reserve_alert_at = now
+                    try:
+                        member_ids = []
+                        if dead_bot.team_id:
+                            members_result = await db.execute(
+                                select(TeamMember.telegram_id).where(TeamMember.team_id == dead_bot.team_id)
+                            )
+                            member_ids = members_result.scalars().all()
+
+                        key_line = f"▫️ Ключ: 🔑 {key_name}\n" if key_name else ""
+                        no_reserve_text = (
+                            f"⚠️ <b>Нет резерва</b>\n\n"
+                            f"Бот @{dead_bot.username} был заблокирован Telegram, "
+                            f"но в ключе нет резервных ботов для замены.\n\n"
+                            f"{key_line}"
+                            f"▫️ Время: {now.strftime('%d.%m.%Y %H:%M')} UTC"
+                        )
+                        if member_ids:
+                            await notify_team_members(member_ids, no_reserve_text)
+                        else:
+                            await notify_owner(dead_bot.owner_telegram_id, no_reserve_text)
+                    except Exception as notify_err:
+                        logger.error(f"Failed to notify about no reserve for @{dead_bot.username}: {notify_err}")
+
                 logger.warning(
-                    f"No reserve available for @{dead_bot.username}"
+                    f"No reserve available for @{dead_bot.username} (throttled={throttled})"
                 )
                 not_replaced.append({
                     "dead_bot_id": dead_bot.id,
                     "dead_bot_username": dead_bot.username,
                     "key_name": key_name,
-                    "reason": "No reserve available"
+                    "reason": "No reserve available",
+                    "throttled": throttled,
                 })
 
     await db.commit()
@@ -260,7 +294,7 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
                         json=payload_name,
                     )
                     await client.post(
-                        f"https://api.telegram.org/bot{task['reserve_token']}/setMyDescription",
+                        f"https://api.telegram.org/bot{task['reserve_token']}/setMyShortDescription",
                         json=payload_desc,
                     )
                 applied_regions.append(region)
@@ -307,7 +341,8 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
             key_line = f"▫️ Ключ: 🔑 {key_name}\n" if key_name else ""
             notify_text = (
                 f"🔄 <b>Замена бота</b>\n\n"
-                f"Бот @{task['dead_username']} перестал отвечать и был автоматически заменён.\n\n"
+                f"Бот @{task['dead_username']} был заблокирован Telegram "
+                f"и автоматически заменён на @{task['reserve_username']}.\n\n"
                 f"{key_line}"
                 f"▫️ Старый бот: @{task['dead_username']}\n"
                 f"▫️ Новый бот: @{task['reserve_username']}\n"
@@ -330,24 +365,28 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
         f"Replacement finished. Success: {len(replacements)}, Not replaced: {len(not_replaced)}"
     )
 
-    text = "🔄 Массовая замена ботов\n\n"
+    new_not_replaced = [r for r in not_replaced if not r.get("throttled", False)]
 
-    if replacements:
-        text += "✅ Успешные замены:\n"
-        for r in replacements:
-            key_tag = f" [🔑 {r['key_name']}]" if r.get('key_name') else ""
-            text += (
-                f"• @{r['dead_bot_username']} → "
-                f"@{r['new_active_username']}{key_tag}\n"
-            )
+    if replacements or new_not_replaced:
+        text = "🔄 Массовая замена ботов\n\n"
 
-    if not_replaced:
-        text += "\n❗ Не заменены:\n"
-        for r in not_replaced:
-            key_tag = f" [🔑 {r['key_name']}]" if r.get('key_name') else ""
-            text += f"• @{r['dead_bot_username']} ({r['reason']}){key_tag}\n"
+        if replacements:
+            text += "✅ Успешные замены:\n"
+            for r in replacements:
+                key_tag = f" [🔑 {r['key_name']}]" if r.get('key_name') else ""
+                text += (
+                    f"• @{r['dead_bot_username']} (заблокирован) → "
+                    f"@{r['new_active_username']}{key_tag}\n"
+                )
 
-    await notify_admin(text)
+        if new_not_replaced:
+            text += "\n❗ Не заменены:\n"
+            for r in new_not_replaced:
+                key_tag = f" [🔑 {r['key_name']}]" if r.get('key_name') else ""
+                reason = "заблокирован Telegram, нет резерва" if r["reason"] == "No reserve available" else r["reason"]
+                text += f"• @{r['dead_bot_username']} ({reason}){key_tag}\n"
+
+        await notify_admin(text)
 
     return {
         "replaced_count": len(replacements),

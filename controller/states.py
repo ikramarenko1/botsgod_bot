@@ -81,6 +81,23 @@ class KeyRoleStates(StatesGroup):
     selecting_role = State()
 
 
+class MassDeleteStates(StatesGroup):
+    selecting_bots = State()
+    confirming = State()
+
+
+class GlobalConfigStates(StatesGroup):
+    waiting_name = State()
+    editing_welcome_text = State()
+    editing_welcome_photo = State()
+    editing_welcome_buttons = State()
+    editing_auto_reply = State()
+    editing_avatar = State()
+    editing_region_name = State()
+    editing_region_desc = State()
+    selecting_region = State()
+
+
 class AutoReplyStates(StatesGroup):
     waiting_text = State()
 

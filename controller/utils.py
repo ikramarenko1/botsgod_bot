@@ -66,7 +66,7 @@ def status_emoji(status: str) -> str:
         "sent": "✅",
         "failed": "❌",
         "cancelled": "🛑",
-    }.get(status or "", "•")
+    }.get(status or "", "-")
 
 
 def short_text(s: Optional[str], n: int = 60) -> str:

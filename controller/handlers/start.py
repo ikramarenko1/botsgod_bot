@@ -63,7 +63,7 @@ async def my_bots_handler(callback):
         await callback.answer()
         return
 
-    role_icons = {"active": "🟢", "reserve": "🟠", "farm": "🔄", "disabled": "⛔"}
+    role_icons = {"active": "🟢", "reserve": "🟠", "farm": "🔄", "disabled": "⛔", "geo_ban": "🚫"}
 
     total_pages = max(1, (len(bots) + BOTS_PER_PAGE - 1) // BOTS_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
@@ -180,6 +180,57 @@ async def sync_webhooks_handler(callback):
     await safe_edit(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
 
 
+@router.callback_query(lambda c: c.data == "check_extra_bots")
+async def check_extra_bots_handler(callback):
+    owner_id = callback.from_user.id
+    await safe_edit(callback.message, "⏳ Проверка доп. ботов...")
+    await callback.answer()
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{BACKEND_URL}/bots/check-extra",
+                headers=owner_headers(owner_id, with_api_key=True),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        await safe_edit(callback.message, "❌ Ошибка проверки доп. ботов.")
+        return
+
+    deleted = data.get("deleted", [])
+    total_checked = data.get("total_checked", 0)
+
+    role_labels = {"reserve": "🟠 Резервный", "farm": "🔄 Фарм"}
+
+    if deleted:
+        lines = [
+            f"🔍 <b>Проверка доп. ботов</b>\n",
+            f"📊 Проверено: <b>{total_checked}</b>",
+            f"❌ Удалено: <b>{len(deleted)}</b>\n",
+        ]
+        for d in deleted:
+            role_text = role_labels.get(d["role"], d["role"])
+            key_part = f"\n      🔑 {d['key_name']}" if d.get("key_name") else ""
+            lines.append(f"- @{d['username']} — {role_text}{key_part}")
+        text = "\n".join(lines)
+    else:
+        text = (
+            f"🔍 <b>Проверка доп. ботов</b>\n\n"
+            f"📊 Проверено: <b>{total_checked}</b>\n\n"
+            f"✅ Все боты reserve и farm работают корректно."
+        )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Повторить", callback_data="check_extra_bots")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
+        ]
+    )
+
+    await safe_edit(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
+
+
 @router.callback_query(lambda c: c.data == "back_to_main")
 async def back_to_main_handler(callback):
     await safe_edit(
@@ -221,6 +272,7 @@ async def add_bot_token_handler(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="🟢 Активный бот", callback_data="add_role_active")],
             [InlineKeyboardButton(text="🟠 Резервный бот", callback_data="add_role_reserve")],
             [InlineKeyboardButton(text="🔄 Фарм бот", callback_data="add_role_farm")],
+            [InlineKeyboardButton(text="🚫 геоБАН", callback_data="add_role_geo_ban")],
         ]
     )
 
@@ -242,7 +294,7 @@ async def add_bot_token_handler(message: Message, state: FSMContext):
     await state.set_state(AddBotState.waiting_for_role)
 
 
-@router.callback_query(AddBotState.waiting_for_role, lambda c: c.data in ("add_role_active", "add_role_reserve", "add_role_farm"))
+@router.callback_query(AddBotState.waiting_for_role, lambda c: c.data in ("add_role_active", "add_role_reserve", "add_role_farm", "add_role_geo_ban"))
 async def add_bot_role_handler(callback, state: FSMContext):
     owner_id = callback.from_user.id
     data = await state.get_data()
@@ -252,9 +304,10 @@ async def add_bot_role_handler(callback, state: FSMContext):
         "add_role_active": "active",
         "add_role_reserve": "reserve",
         "add_role_farm": "farm",
+        "add_role_geo_ban": "geo_ban",
     }
     role = role_map[callback.data]
-    role_labels = {"active": "🟢 Активный", "reserve": "🟠 Резервный", "farm": "🔄 Фарм"}
+    role_labels = {"active": "🟢 Активный", "reserve": "🟠 Резервный", "farm": "🔄 Фарм", "geo_ban": "🚫 геоБАН"}
     role_label = role_labels.get(role, role)
 
     added = []
@@ -292,11 +345,11 @@ async def add_bot_role_handler(callback, state: FSMContext):
         if added:
             lines.append(f"✅ Добавлено: {len(added)}")
             for u in added:
-                lines.append(f"  • {u}")
+                lines.append(f"  - {u}")
         if failed:
             lines.append(f"\n❌ Ошибки: {len(failed)}")
             for t in failed:
-                lines.append(f"  • {t}")
+                lines.append(f"  - {t}")
         text = "\n".join(lines)
 
     await safe_edit(callback.message, text, reply_markup=keyboard, parse_mode="HTML")

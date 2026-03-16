@@ -375,7 +375,7 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
             for r in replacements:
                 key_tag = f" [🔑 {r['key_name']}]" if r.get('key_name') else ""
                 text += (
-                    f"• @{r['dead_bot_username']} (заблокирован) → "
+                    f"- @{r['dead_bot_username']} (заблокирован) → "
                     f"@{r['new_active_username']}{key_tag}\n"
                 )
 
@@ -384,7 +384,7 @@ async def run_replacement(db: AsyncSession, media_dir: str) -> dict:
             for r in new_not_replaced:
                 key_tag = f" [🔑 {r['key_name']}]" if r.get('key_name') else ""
                 reason = "заблокирован Telegram, нет резерва" if r["reason"] == "No reserve available" else r["reason"]
-                text += f"• @{r['dead_bot_username']} ({reason}){key_tag}\n"
+                text += f"- @{r['dead_bot_username']} ({reason}){key_tag}\n"
 
         await notify_admin(text)
 

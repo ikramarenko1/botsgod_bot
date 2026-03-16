@@ -229,8 +229,8 @@ async def mbc_when_time(callback, state: FSMContext):
         text=(
             "⏳ <b>Введите время (UTC+3)</b>\n\n"
             "Форматы:\n"
-            "• <code>ЧЧ:ММ</code>\n"
-            "• <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>"
+            "- <code>ЧЧ:ММ</code>\n"
+            "- <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>"
         ),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="mass_broadcast")]

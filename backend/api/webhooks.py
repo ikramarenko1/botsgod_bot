@@ -224,7 +224,7 @@ async def telegram_webhook(
     now = datetime.utcnow()
 
     bot_data = await _get_bot_cached(bot_id)
-    if not bot_data or bot_data["role"] == BotRole.disabled:
+    if not bot_data or bot_data["role"] in (BotRole.disabled, BotRole.geo_ban):
         raise HTTPException(status_code=404, detail="Bot not found or disabled")
 
     user_id = None

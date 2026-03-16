@@ -4,15 +4,15 @@ from aiogram.fsm.context import FSMContext
 
 from controller.common import backend_request, safe_edit
 from controller.keyboards.main import bots_checkbox_keyboard, main_menu_keyboard
-from controller.states import MassRoleStates
+from controller.states import MassKeyStates
 
 router = Router()
 
-PREFIX = "mrl"
+PREFIX = "mky"
 
 
-@router.callback_query(lambda c: c.data == "mass_role")
-async def mass_role_start(callback, state: FSMContext):
+@router.callback_query(lambda c: c.data == "mass_key")
+async def mass_key_start(callback, state: FSMContext):
     owner_id = callback.from_user.id
     await state.clear()
 
@@ -29,31 +29,31 @@ async def mass_role_start(callback, state: FSMContext):
         return
 
     await state.update_data(bots=bots, selected_ids=set())
-    await state.set_state(MassRoleStates.selecting_bots)
+    await state.set_state(MassKeyStates.selecting_bots)
 
     kb = bots_checkbox_keyboard(PREFIX, bots, set(), back_callback="back_to_main")
     await safe_edit(
         callback.message,
-        "🔄 <b>Массовая смена роли</b>\n\nВыберите ботов:",
+        "🔑 <b>Массовая смена ключа</b>\n\nВыберите ботов:",
         reply_markup=kb,
         parse_mode="HTML",
     )
     await callback.answer()
 
 
-@router.callback_query(MassRoleStates.selecting_bots, lambda c: c.data.startswith(f"{PREFIX}_page_"))
-async def mrl_page(callback, state: FSMContext):
+@router.callback_query(MassKeyStates.selecting_bots, lambda c: c.data.startswith(f"{PREFIX}_page_"))
+async def mky_page(callback, state: FSMContext):
     page = int(callback.data.split("_")[-1])
     data = await state.get_data()
     selected = set(data.get("selected_ids", set()))
     await state.update_data(page=page)
     kb = bots_checkbox_keyboard(PREFIX, data["bots"], selected, page=page)
-    await safe_edit(callback.message, f"🔄 <b>Массовая смена роли</b>\n\nВыбрано: {len(selected)}", reply_markup=kb, parse_mode="HTML")
+    await safe_edit(callback.message, f"🔑 <b>Массовая смена ключа</b>\n\nВыбрано: {len(selected)}", reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
-@router.callback_query(MassRoleStates.selecting_bots, lambda c: c.data.startswith(f"{PREFIX}_toggle_"))
-async def mrl_toggle(callback, state: FSMContext):
+@router.callback_query(MassKeyStates.selecting_bots, lambda c: c.data.startswith(f"{PREFIX}_toggle_"))
+async def mky_toggle(callback, state: FSMContext):
     bot_id = int(callback.data.split("_")[-1])
     data = await state.get_data()
     selected = set(data.get("selected_ids", set()))
@@ -68,15 +68,15 @@ async def mrl_toggle(callback, state: FSMContext):
     kb = bots_checkbox_keyboard(PREFIX, data["bots"], selected, page=page)
     await safe_edit(
         callback.message,
-        f"🔄 <b>Массовая смена роли</b>\n\nВыбрано: {len(selected)}",
+        f"🔑 <b>Массовая смена ключа</b>\n\nВыбрано: {len(selected)}",
         reply_markup=kb,
         parse_mode="HTML",
     )
     await callback.answer()
 
 
-@router.callback_query(MassRoleStates.selecting_bots, lambda c: c.data == f"{PREFIX}_select_all")
-async def mrl_select_all(callback, state: FSMContext):
+@router.callback_query(MassKeyStates.selecting_bots, lambda c: c.data == f"{PREFIX}_select_all")
+async def mky_select_all(callback, state: FSMContext):
     data = await state.get_data()
     selected = {b["id"] for b in data["bots"]}
     page = data.get("page", 0)
@@ -84,29 +84,30 @@ async def mrl_select_all(callback, state: FSMContext):
     kb = bots_checkbox_keyboard(PREFIX, data["bots"], selected, page=page)
     await safe_edit(
         callback.message,
-        f"🔄 <b>Массовая смена роли</b>\n\nВыбрано: {len(selected)}",
+        f"🔑 <b>Массовая смена ключа</b>\n\nВыбрано: {len(selected)}",
         reply_markup=kb,
         parse_mode="HTML",
     )
     await callback.answer()
 
 
-@router.callback_query(MassRoleStates.selecting_bots, lambda c: c.data == f"{PREFIX}_reset")
-async def mrl_reset(callback, state: FSMContext):
+@router.callback_query(MassKeyStates.selecting_bots, lambda c: c.data == f"{PREFIX}_reset")
+async def mky_reset(callback, state: FSMContext):
     data = await state.get_data()
     await state.update_data(selected_ids=set(), page=0)
     kb = bots_checkbox_keyboard(PREFIX, data["bots"], set())
     await safe_edit(
         callback.message,
-        "🔄 <b>Массовая смена роли</b>\n\nВыберите ботов:",
+        "🔑 <b>Массовая смена ключа</b>\n\nВыберите ботов:",
         reply_markup=kb,
         parse_mode="HTML",
     )
     await callback.answer()
 
 
-@router.callback_query(MassRoleStates.selecting_bots, lambda c: c.data == f"{PREFIX}_done")
-async def mrl_done_selecting(callback, state: FSMContext):
+@router.callback_query(MassKeyStates.selecting_bots, lambda c: c.data == f"{PREFIX}_done")
+async def mky_done_selecting(callback, state: FSMContext):
+    owner_id = callback.from_user.id
     data = await state.get_data()
     selected = data.get("selected_ids", set())
 
@@ -114,65 +115,81 @@ async def mrl_done_selecting(callback, state: FSMContext):
         await callback.answer("Выберите хотя бы одного бота", show_alert=True)
         return
 
-    await state.set_state(MassRoleStates.selecting_role)
+    try:
+        keys = await backend_request("GET", "/keys", telegram_id=owner_id)
+    except Exception:
+        keys = []
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🟢 Активный", callback_data="mrl_role_active")],
-            [InlineKeyboardButton(text="🟠 Резервный", callback_data="mrl_role_reserve")],
-            [InlineKeyboardButton(text="🔄 Фарм", callback_data="mrl_role_farm")],
-            [InlineKeyboardButton(text="🚫 геоБАН", callback_data="mrl_role_geo_ban")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="mass_role")],
-        ]
-    )
+    await state.set_state(MassKeyStates.selecting_key)
+
+    keys_map = {k["id"]: k["short_name"] for k in keys}
+    await state.update_data(keys_map=keys_map)
+
+    rows = []
+    for key in keys:
+        rows.append([InlineKeyboardButton(
+            text=f"🔑 {key['short_name']}",
+            callback_data=f"mky_key_{key['id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="🚫 Без ключа", callback_data="mky_key_0")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="mass_key")])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
 
     await safe_edit(
         callback.message,
-        f"Выбрано ботов: <b>{len(selected)}</b>\n\nВыберите новую роль:",
+        f"Выбрано ботов: <b>{len(selected)}</b>\n\nВыберите ключ:",
         reply_markup=keyboard,
         parse_mode="HTML",
     )
     await callback.answer()
 
 
-@router.callback_query(MassRoleStates.selecting_role, lambda c: c.data in ("mrl_role_active", "mrl_role_reserve", "mrl_role_farm", "mrl_role_geo_ban"))
-async def mrl_apply_role(callback, state: FSMContext):
+@router.callback_query(MassKeyStates.selecting_key, lambda c: c.data.startswith("mky_key_"))
+async def mky_apply_key(callback, state: FSMContext):
     owner_id = callback.from_user.id
     data = await state.get_data()
     selected_ids = list(data.get("selected_ids", []))
 
-    role_map = {
-        "mrl_role_active": "active",
-        "mrl_role_reserve": "reserve",
-        "mrl_role_farm": "farm",
-        "mrl_role_geo_ban": "geo_ban",
-    }
-    role = role_map[callback.data]
-    role_labels = {"active": "🟢 Активный", "reserve": "🟠 Резервный", "farm": "🔄 Фарм", "geo_ban": "🚫 геоБАН"}
+    key_id_str = callback.data.split("mky_key_")[1]
+    key_id = int(key_id_str)
+    key_id_value = key_id if key_id != 0 else None
 
-    success = 0
-    failed = 0
+    bots = data.get("bots", [])
+    bots_by_id = {b["id"]: b for b in bots}
+
+    success_bots = []
+    failed_bots = []
 
     for bot_id in selected_ids:
+        bot_info = bots_by_id.get(bot_id, {})
+        username = bot_info.get("username", str(bot_id))
         try:
             await backend_request(
                 "PATCH",
-                f"/bots/{bot_id}/role",
+                f"/bots/{bot_id}/key",
                 telegram_id=owner_id,
-                json={"role": role},
+                json={"key_id": key_id_value},
                 with_api_key=True,
             )
-            success += 1
+            success_bots.append(username)
         except Exception:
-            failed += 1
+            failed_bots.append(username)
 
+    keys_map = data.get("keys_map", {})
+    key_name = keys_map.get(key_id, str(key_id)) if key_id != 0 else None
+    key_label = "🚫 Без ключа" if key_id == 0 else f"🔑 {key_name}"
     lines = [
-        f"🔄 <b>Результат смены роли</b>\n",
-        f"Новая роль: {role_labels.get(role, role)}\n",
-        f"✅ Успешно: {success}",
+        f"🔑 <b>Результат смены ключа</b>\n",
+        f"Новый ключ: {key_label}\n",
+        f"✅ Успешно: {len(success_bots)}",
     ]
-    if failed:
-        lines.append(f"❌ Ошибок: {failed}")
+    for u in success_bots:
+        lines.append(f"  - @{u}")
+    if failed_bots:
+        lines.append(f"\n❌ Ошибок: {len(failed_bots)}")
+        for u in failed_bots:
+            lines.append(f"  - @{u}")
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[

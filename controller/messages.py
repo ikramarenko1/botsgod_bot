@@ -4,7 +4,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 def bot_menu_keyboard(bot_id: str, role: str, back_callback: str = "my_bots", has_avatar: bool = False) -> InlineKeyboardMarkup:
     is_active = role == "active"
-    is_disabled = role == "disabled"
+    is_disabled = role in ("disabled", "geo_ban")
 
     if is_disabled:
         toggle_text = "✅ Включить бота"
@@ -39,6 +39,7 @@ def bot_menu_text(bot_username: str, role: str, key_name: Optional[str] = None) 
         "reserve": "\n\n🟠 Резервный бот",
         "farm": "\n\n🔄 Фарм бот",
         "active": "\n\n🟢 Активный бот",
+        "geo_ban": "\n\n🚫 геоБАН",
     }
     status_line = role_lines.get(role, "")
     key_line = f"\n🔑 Ключ: {key_name}" if key_name else ""

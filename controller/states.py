@@ -55,6 +55,11 @@ class MassRoleStates(StatesGroup):
     selecting_role = State()
 
 
+class MassKeyStates(StatesGroup):
+    selecting_bots = State()
+    selecting_key = State()
+
+
 class KeyStates(StatesGroup):
     waiting_full_name = State()
     waiting_short_name = State()

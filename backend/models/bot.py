@@ -13,6 +13,7 @@ class BotRole(enum.Enum):
     reserve = "reserve"
     farm = "farm"
     disabled = "disabled"
+    geo_ban = "geo_ban"
 
 
 class BotStatus(enum.Enum):

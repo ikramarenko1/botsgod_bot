@@ -199,8 +199,8 @@ async def broadcast_when_time(callback, state: FSMContext):
         text=(
             "⏳ <b>Введите время (UTC+3)</b>\n\n"
             "Форматы:\n"
-            "• <code>ЧЧ:ММ</code>\n"
-            "• <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
+            "- <code>ЧЧ:ММ</code>\n"
+            "- <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
             "Пример: <code>19:30</code>"
         ),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -224,8 +224,8 @@ async def broadcast_time_input(message: Message, state: FSMContext):
             message.bot, message.chat.id, wizard_msg_id,
             "❌ <b>Неверный формат времени</b>\n\n"
             "Форматы:\n"
-            "• <code>ЧЧ:ММ</code>\n"
-            "• <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
+            "- <code>ЧЧ:ММ</code>\n"
+            "- <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
             "Пример: <code>19:30</code>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_cancel")]

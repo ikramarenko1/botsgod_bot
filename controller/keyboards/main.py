@@ -24,6 +24,8 @@ def main_menu_keyboard():
             [InlineKeyboardButton(text="⚙️ Глобальные конфиги", callback_data="global_configs")],
             [InlineKeyboardButton(text="👥 Моя команда", callback_data="my_team")],
             [InlineKeyboardButton(text="🧠 Статус Worker", callback_data="worker_status")],
+            [InlineKeyboardButton(text="🔑 Массовая смена ключа", callback_data="mass_key")],
+            [InlineKeyboardButton(text="🔍 Проверить доп. ботов", callback_data="check_extra_bots")],
             [InlineKeyboardButton(text="🔄 Синхронизировать вебхуки", callback_data="sync_webhooks")],
         ]
     )
@@ -70,7 +72,7 @@ def bots_checkbox_keyboard(
         bot_id = bot["id"]
         check = "✅" if bot_id in selected_ids else "⬜"
         role = bot.get("role", "")
-        role_icons = {"active": "🟢", "reserve": "🟠", "farm": "🔄", "disabled": "⛔"}
+        role_icons = {"active": "🟢", "reserve": "🟠", "farm": "🔄", "disabled": "⛔", "geo_ban": "🚫"}
         icon = role_icons.get(role, "")
         label = f"{check} {icon} @{bot['username']}" if icon else f"{check} @{bot['username']}"
         rows.append([

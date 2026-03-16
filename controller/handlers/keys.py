@@ -311,11 +311,11 @@ async def key_add_bot_role(callback, state: FSMContext):
         if added:
             lines.append(f"✅ Добавлено и привязано: {len(added)}")
             for b in added:
-                lines.append(f"  • @{b['username']}")
+                lines.append(f"  - @{b['username']}")
         if failed:
             lines.append(f"\n❌ Ошибки: {len(failed)}")
             for t in failed:
-                lines.append(f"  • {t}")
+                lines.append(f"  - {t}")
         text = "\n".join(lines)
 
     await safe_edit(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
@@ -449,7 +449,7 @@ async def ka_done(callback, state: FSMContext):
         return
 
     bots = key.get("bots", [])
-    bots_text = "\n".join([f"  • @{b['username']} ({b['role']})" for b in bots]) if bots else "— нет ботов —"
+    bots_text = "\n".join([f"  - @{b['username']} ({b['role']})" for b in bots]) if bots else "— нет ботов —"
 
     text = (
         f"🔑 <b>Ключ: {key['short_name']}</b>\n\n"
@@ -779,8 +779,8 @@ async def kbc_when_time(callback, state: FSMContext):
         callback.bot, callback.message.chat.id, wizard_msg_id,
         "⏳ <b>Введите время (UTC+3)</b>\n\n"
         "Форматы:\n"
-        "• <code>ЧЧ:ММ</code>\n"
-        "• <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
+        "- <code>ЧЧ:ММ</code>\n"
+        "- <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"key_{key_id}_broadcast")]
         ]),
@@ -1027,6 +1027,7 @@ async def krl_done_selecting(callback, state: FSMContext):
             [InlineKeyboardButton(text="🟢 Активный", callback_data="krl_role_active")],
             [InlineKeyboardButton(text="🟠 Резервный", callback_data="krl_role_reserve")],
             [InlineKeyboardButton(text="🔄 Фарм", callback_data="krl_role_farm")],
+            [InlineKeyboardButton(text="🚫 геоБАН", callback_data="krl_role_geo_ban")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"key_{key_id}_mass_role")],
         ]
     )
@@ -1040,7 +1041,7 @@ async def krl_done_selecting(callback, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(KeyRoleStates.selecting_role, lambda c: c.data in ("krl_role_active", "krl_role_reserve", "krl_role_farm"))
+@router.callback_query(KeyRoleStates.selecting_role, lambda c: c.data in ("krl_role_active", "krl_role_reserve", "krl_role_farm", "krl_role_geo_ban"))
 async def krl_apply_role(callback, state: FSMContext):
     owner_id = callback.from_user.id
     data = await state.get_data()
@@ -1051,9 +1052,10 @@ async def krl_apply_role(callback, state: FSMContext):
         "krl_role_active": "active",
         "krl_role_reserve": "reserve",
         "krl_role_farm": "farm",
+        "krl_role_geo_ban": "geo_ban",
     }
     role = role_map[callback.data]
-    role_labels = {"active": "🟢 Активный", "reserve": "🟠 Резервный", "farm": "🔄 Фарм"}
+    role_labels = {"active": "🟢 Активный", "reserve": "🟠 Резервный", "farm": "🔄 Фарм", "geo_ban": "🚫 геоБАН"}
 
     success = 0
     failed = 0
@@ -1192,7 +1194,7 @@ async def kmd_done_selecting(callback, state: FSMContext):
         return
 
     bot_names = [f"@{b['username']}" for b in data["bots"] if b["id"] in selected]
-    names_str = "\n".join(f"  • {n}" for n in bot_names)
+    names_str = "\n".join(f"  - {n}" for n in bot_names)
 
     await state.set_state(MassDeleteStates.confirming)
 

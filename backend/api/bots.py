@@ -388,6 +388,73 @@ async def health_check_all(
     return {"checked": checked}
 
 
+@router.post("/bots/check-extra")
+async def check_extra_bots(
+    team_id: int = Depends(get_user_team_id),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
+    import asyncio
+    from backend.models.key import Key
+
+    result = await db.execute(
+        select(Bot).where(
+            Bot.team_id == team_id,
+            Bot.role.in_([BotRole.reserve, BotRole.farm]),
+        )
+    )
+    bots = result.scalars().all()
+
+    key_ids = {b.key_id for b in bots if b.key_id}
+    keys_map = {}
+    if key_ids:
+        keys_result = await db.execute(select(Key).where(Key.id.in_(key_ids)))
+        keys_map = {k.id: k.short_name for k in keys_result.scalars().all()}
+
+    bot_infos = [
+        {
+            "bot": b,
+            "username": b.username,
+            "role": b.role.value,
+            "key_name": keys_map.get(b.key_id) if b.key_id else None,
+        }
+        for b in bots
+    ]
+
+    async def check_one(info):
+        bot = info["bot"]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"https://api.telegram.org/bot{bot.token}/getMe"
+                )
+            if resp.status_code != 200 or not resp.json().get("ok"):
+                return info
+        except Exception:
+            return info
+        return None
+
+    results = await asyncio.gather(
+        *[check_one(info) for info in bot_infos],
+        return_exceptions=True,
+    )
+
+    deleted = []
+    for r in results:
+        if r is None or isinstance(r, Exception):
+            continue
+        bot = r["bot"]
+        await svc_delete_bot(db, bot, MEDIA_DIR)
+        invalidate_bot_cache(bot.id)
+        deleted.append({
+            "username": r["username"],
+            "role": r["role"],
+            "key_name": r["key_name"],
+        })
+
+    return {"deleted": deleted, "total_checked": len(bots)}
+
+
 @router.post("/bots/{bot_id}/configs", response_model=BotConfigResponse)
 async def upsert_bot_config(
     data: BotConfigCreate,
@@ -578,6 +645,33 @@ async def delete_bot_avatar(
     return {"status": "avatar_deleted"}
 
 
+@router.patch("/bots/{bot_id}/key")
+async def update_bot_key(
+    data: dict,
+    bot: Bot = Depends(get_owned_bot),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
+    from backend.models.key import Key
+
+    key_id = data.get("key_id")
+
+    if key_id is not None:
+        key = await db.execute(select(Key).where(Key.id == key_id))
+        key = key.scalar_one_or_none()
+        if not key:
+            raise HTTPException(status_code=404, detail="Key not found")
+        if key.team_id != bot.team_id:
+            raise HTTPException(status_code=403, detail="Key belongs to another team")
+
+    bot.key_id = key_id
+    await db.commit()
+    await db.refresh(bot)
+    invalidate_bot_cache(bot.id)
+
+    return {"status": "updated"}
+
+
 @router.patch("/bots/{bot_id}/role", response_model=BotResponse)
 async def update_bot_role(
     data: BotRoleUpdateRequest,
@@ -585,7 +679,7 @@ async def update_bot_role(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_api_key),
 ):
-    if data.role not in ("active", "reserve", "farm", "disabled"):
+    if data.role not in ("active", "reserve", "farm", "disabled", "geo_ban"):
         raise HTTPException(status_code=400, detail="Invalid role")
 
     bot.role = BotRole(data.role)
@@ -613,7 +707,7 @@ async def update_bot_role(
             await set_webhook(bot)
         except Exception as e:
             logger.error(f"Failed to set webhook for bot {bot.id}: {e}")
-    elif data.role in ("reserve", "disabled"):
+    elif data.role in ("reserve", "disabled", "geo_ban"):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(f"https://api.telegram.org/bot{bot.token}/deleteWebhook")

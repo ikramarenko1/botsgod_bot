@@ -119,21 +119,25 @@ async def apply_global_config_to_bot(
             if existing_config:
                 existing_config.name = gc_region.name
                 existing_config.description = gc_region.description
+                existing_config.full_description = gc_region.full_description
             else:
                 new_config = BotConfig(
                     bot_id=bot.id,
                     region=gc_region.region,
                     name=gc_region.name,
                     description=gc_region.description,
+                    full_description=gc_region.full_description,
                 )
                 db.add(new_config)
 
             try:
                 payload_name = {"name": gc_region.name}
                 payload_desc = {"short_description": gc_region.description or ""}
+                payload_full_desc = {"description": gc_region.full_description or ""}
                 if gc_region.region != "default":
                     payload_name["language_code"] = gc_region.region
                     payload_desc["language_code"] = gc_region.region
+                    payload_full_desc["language_code"] = gc_region.region
                 async with httpx.AsyncClient(timeout=10) as client:
                     resp_name = await client.post(
                         f"https://api.telegram.org/bot{bot.token}/setMyName",
@@ -152,6 +156,15 @@ async def apply_global_config_to_bot(
                         err = resp_desc.json().get("description", "unknown error")
                         logger.warning(f"Global config: setMyShortDescription failed for @{bot.username} region {gc_region.region}: {err}")
                         api_errors.append(f"setMyShortDescription {gc_region.region}: {err}")
+
+                    resp_full = await client.post(
+                        f"https://api.telegram.org/bot{bot.token}/setMyDescription",
+                        json=payload_full_desc,
+                    )
+                    if resp_full.status_code != 200 or not resp_full.json().get("ok"):
+                        err = resp_full.json().get("description", "unknown error")
+                        logger.warning(f"Global config: setMyDescription failed for @{bot.username} region {gc_region.region}: {err}")
+                        api_errors.append(f"setMyDescription {gc_region.region}: {err}")
             except Exception as e:
                 logger.error(f"Global config: region {gc_region.region} apply failed for @{bot.username}: {e}")
 

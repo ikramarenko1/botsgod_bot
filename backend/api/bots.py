@@ -473,12 +473,15 @@ async def upsert_bot_config(
     if config:
         config.name = data.name
         config.description = data.description
+        if data.full_description is not None:
+            config.full_description = data.full_description
     else:
         config = BotConfig(
             bot_id=bot.id,
             region=data.region,
             name=data.name,
             description=data.description,
+            full_description=data.full_description,
         )
         db.add(config)
 
@@ -510,10 +513,12 @@ async def apply_bot_config(
 
     payload_name = {"name": config.name}
     payload_desc = {"short_description": config.description}
+    payload_full_desc = {"description": config.full_description or ""}
 
     if data.region != "default":
         payload_name["language_code"] = data.region
         payload_desc["language_code"] = data.region
+        payload_full_desc["language_code"] = data.region
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp_name = await client.post(
@@ -536,6 +541,17 @@ async def apply_bot_config(
             raise HTTPException(
                 status_code=502,
                 detail="Failed to set bot short description in Telegram",
+            )
+
+        resp_full = await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setMyDescription",
+            json=payload_full_desc,
+        )
+
+        if resp_full.status_code != 200 or not resp_full.json().get("ok"):
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to set bot description in Telegram",
             )
 
     bot.last_applied_region = data.region

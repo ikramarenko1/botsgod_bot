@@ -52,10 +52,12 @@ async def apply_last_config(db: AsyncSession, bot: Bot, region: str):
 
     payload_name = {"name": config.name}
     payload_desc = {"short_description": config.description}
+    payload_full_desc = {"description": config.full_description or ""}
 
     if region != "default":
         payload_name["language_code"] = region
         payload_desc["language_code"] = region
+        payload_full_desc["language_code"] = region
 
     async with httpx.AsyncClient(timeout=10) as client:
         await client.post(
@@ -66,6 +68,11 @@ async def apply_last_config(db: AsyncSession, bot: Bot, region: str):
         await client.post(
             f"https://api.telegram.org/bot{bot.token}/setMyShortDescription",
             json=payload_desc,
+        )
+
+        await client.post(
+            f"https://api.telegram.org/bot{bot.token}/setMyDescription",
+            json=payload_full_desc,
         )
 
     logger.debug(

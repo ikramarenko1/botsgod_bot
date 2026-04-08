@@ -100,6 +100,7 @@ class GlobalConfigStates(StatesGroup):
     editing_avatar = State()
     editing_region_name = State()
     editing_region_desc = State()
+    editing_region_full_desc = State()
     selecting_region = State()
 
 

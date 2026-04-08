@@ -13,6 +13,12 @@ def bot_menu_keyboard(bot_id: str, role: str, back_callback: str = "my_bots", ha
         toggle_text = "⛔ Выключить бота"
         toggle_data = f"bot_{bot_id}_disable"
 
+    if back_callback.startswith("key_"):
+        key_id = back_callback.split("_")[1]
+        rename_cb = f"bot_{bot_id}_fk_{key_id}_rename"
+    else:
+        rename_cb = f"bot_{bot_id}_rename"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📊 Статистика", callback_data=f"bot_{bot_id}_stats")],
@@ -21,7 +27,7 @@ def bot_menu_keyboard(bot_id: str, role: str, back_callback: str = "my_bots", ha
             [InlineKeyboardButton(text="⏳ Отложенное сообщение", callback_data=f"bot_{bot_id}_delayed")],
             [InlineKeyboardButton(text="📢 Создать рассылку", callback_data=f"bot_{bot_id}_create_broadcast")],
             [InlineKeyboardButton(text="🗂 Отложенные рассылки", callback_data=f"bot_{bot_id}_scheduled_broadcasts")],
-            [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"bot_{bot_id}_rename")],
+            [InlineKeyboardButton(text="✏️ Изменить название", callback_data=rename_cb)],
             [InlineKeyboardButton(text="🖼 Изменить фото", callback_data=f"bot_{bot_id}_avatar")] +
             ([InlineKeyboardButton(text="🗑 Удалить фото", callback_data=f"bot_{bot_id}_avatar_delete")] if has_avatar else []),
             [InlineKeyboardButton(text=toggle_text, callback_data=toggle_data)],

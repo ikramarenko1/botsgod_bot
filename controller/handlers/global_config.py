@@ -564,7 +564,9 @@ async def gc_regions_list(callback, state: FSMContext):
         for r in regions:
             text += f"\n🌍 <b>{r['region']}</b> — {r['name']}"
             if r.get('description'):
-                text += f"\n   <i>{r['description'][:100]}</i>"
+                text += f"\n   📎 <i>{r['description'][:100]}</i>"
+            if r.get('full_description'):
+                text += f"\n   📋 <i>{r['full_description'][:80]}{'...' if len(r['full_description']) > 80 else ''}</i>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await safe_edit(callback.message, text, reply_markup=kb, parse_mode="HTML")
@@ -636,7 +638,8 @@ async def gc_region_name_save(message: Message, state: FSMContext):
 
     await message.answer(
         f"Название: <b>{name}</b>\n\n"
-        "Отправьте описание бота для этого региона.\n"
+        "Отправьте краткое описание бота для этого региона.\n\n"
+        "Отображается в профиле бота. Можно ввести до 120 символов.\n"
         "Или отправьте <code>-</code> чтобы пропустить.",
         reply_markup=kb, parse_mode="HTML",
     )
@@ -644,26 +647,56 @@ async def gc_region_name_save(message: Message, state: FSMContext):
 
 @router.message(GlobalConfigStates.editing_region_desc)
 async def gc_region_desc_save(message: Message, state: FSMContext):
-    owner_id = message.from_user.id
     data = await state.get_data()
     config_id = data["gc_id"]
-    region = data["selected_region"]
-    name = data["region_name"]
 
     text = message.text.strip()
     if text == "-":
         description = None
     elif len(text) > 120:
-        await message.answer(f"⚠️ Описание слишком длинное. Максимум 120 символов (сейчас {len(text)}). Сократите текст.")
+        await message.answer(f"⚠️ Краткое описание слишком длинное. Максимум 120 символов (сейчас {len(text)}). Сократите текст.")
         return
     else:
         description = text
+
+    await state.update_data(region_desc=description)
+    await state.set_state(GlobalConfigStates.editing_region_full_desc)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gc_{config_id}_radd")],
+    ])
+
+    await message.answer(
+        "<b>Полное описание бота</b> - Что умеет этот бот?\n\n"
+        "Отображается при первом открытии чата. Можно ввести до 512 символов.\n"
+        "Или отправьте <code>-</code> чтобы пропустить.",
+        reply_markup=kb, parse_mode="HTML",
+    )
+
+
+@router.message(GlobalConfigStates.editing_region_full_desc)
+async def gc_region_full_desc_save(message: Message, state: FSMContext):
+    owner_id = message.from_user.id
+    data = await state.get_data()
+    config_id = data["gc_id"]
+    region = data["selected_region"]
+    name = data["region_name"]
+    description = data.get("region_desc")
+
+    text = message.text.strip()
+    if text == "-":
+        full_description = None
+    elif len(text) > 512:
+        await message.answer(f"⚠️ Полное описание слишком длинное. Максимум 512 символов (сейчас {len(text)}). Сократите текст.")
+        return
+    else:
+        full_description = text
 
     try:
         await backend_request(
             "POST", f"/global-configs/{config_id}/regions",
             telegram_id=owner_id,
-            json={"region": region, "name": name, "description": description},
+            json={"region": region, "name": name, "description": description, "full_description": full_description},
         )
     except Exception:
         await message.answer("❌ Ошибка сохранения региона.")
@@ -723,7 +756,9 @@ async def gc_region_delete(callback, state: FSMContext):
         for r in regions:
             text += f"\n🌍 <b>{r['region']}</b> — {r['name']}"
             if r.get('description'):
-                text += f"\n   <i>{r['description'][:100]}</i>"
+                text += f"\n   📎 <i>{r['description'][:100]}</i>"
+            if r.get('full_description'):
+                text += f"\n   📋 <i>{r['full_description'][:80]}{'...' if len(r['full_description']) > 80 else ''}</i>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await safe_edit(

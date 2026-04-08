@@ -159,7 +159,7 @@ async def render_delayed_menu(
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
-async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bool = False, back_callback: str = "my_bots"):
+async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bool = False, back_callback: Optional[str] = None):
     try:
         bots = await backend_request("GET", "/bots", telegram_id=owner_id)
     except Exception:
@@ -176,6 +176,12 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
     role = bot_obj.get("role", "active")
     key_name = bot_obj.get("key_name")
     has_avatar = bool(bot_obj.get("avatar_path"))
+
+    # Если back_callback не передан явно — определяем по ключу бота
+    if back_callback is None:
+        key_id = bot_obj.get("key_id")
+        back_callback = f"key_{key_id}" if key_id else "my_bots"
+
     keyboard = bot_menu_keyboard(bot_id, role, back_callback=back_callback, has_avatar=has_avatar)
     text = bot_menu_text(bot_username, role, key_name=key_name)
 
@@ -185,7 +191,7 @@ async def render_bot_menu(message: Message, owner_id: int, bot_id: str, edit: bo
         await message.answer(text, reply_markup=keyboard)
 
 
-async def render_bot_menu_by_id(bot: Bot, chat_id: int, owner_id: int, bot_id: str, message_id: int, back_callback: str = "my_bots"):
+async def render_bot_menu_by_id(bot: Bot, chat_id: int, owner_id: int, bot_id: str, message_id: int, back_callback: Optional[str] = None):
     try:
         bots = await backend_request("GET", "/bots", telegram_id=owner_id)
     except Exception:
@@ -202,6 +208,12 @@ async def render_bot_menu_by_id(bot: Bot, chat_id: int, owner_id: int, bot_id: s
     role = bot_obj.get("role", "active")
     key_name = bot_obj.get("key_name")
     has_avatar = bool(bot_obj.get("avatar_path"))
+
+    # Если back_callback не передан явно — определяем по ключу бота
+    if back_callback is None:
+        key_id = bot_obj.get("key_id")
+        back_callback = f"key_{key_id}" if key_id else "my_bots"
+
     keyboard = bot_menu_keyboard(bot_id, role, back_callback=back_callback, has_avatar=has_avatar)
 
     await safe_edit_by_id(

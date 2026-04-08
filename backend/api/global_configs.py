@@ -55,7 +55,7 @@ async def list_global_configs(
             "welcome_buttons": c.welcome_buttons,
             "auto_reply_text": c.auto_reply_text,
             "is_active": c.is_active,
-            "regions": [{"region": r.region, "name": r.name, "description": r.description} for r in regions],
+            "regions": [{"region": r.region, "name": r.name, "description": r.description, "full_description": r.full_description} for r in regions],
         })
 
     return response
@@ -104,7 +104,7 @@ async def get_global_config(
         "welcome_buttons": config.welcome_buttons,
         "auto_reply_text": config.auto_reply_text,
         "is_active": config.is_active,
-        "regions": [{"region": r.region, "name": r.name, "description": r.description} for r in regions],
+        "regions": [{"region": r.region, "name": r.name, "description": r.description, "full_description": r.full_description} for r in regions],
     }
 
 
@@ -316,12 +316,14 @@ async def upsert_global_config_region(
     if existing:
         existing.name = data.name
         existing.description = data.description
+        existing.full_description = data.full_description
     else:
         region = GlobalConfigRegion(
             global_config_id=config.id,
             region=data.region,
             name=data.name,
             description=data.description,
+            full_description=data.full_description,
         )
         db.add(region)
 

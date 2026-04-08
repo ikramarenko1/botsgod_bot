@@ -6,12 +6,20 @@ class GlobalConfigRegionSchema(BaseModel):
     region: str
     name: str
     description: Optional[str] = None
+    full_description: Optional[str] = None
 
     @field_validator("description")
     @classmethod
     def validate_description(cls, v):
         if v is not None and len(v) > 120:
             raise ValueError("Описание не должно превышать 120 символов")
+        return v
+
+    @field_validator("full_description")
+    @classmethod
+    def validate_full_description(cls, v):
+        if v is not None and len(v) > 512:
+            raise ValueError("Полное описание не должно превышать 512 символов")
         return v
 
 
@@ -30,12 +38,20 @@ class GlobalConfigRegionCreate(BaseModel):
     region: str
     name: str
     description: Optional[str] = None
+    full_description: Optional[str] = None
 
     @field_validator("description")
     @classmethod
     def validate_description(cls, v):
         if v is not None and len(v) > 120:
             raise ValueError("Описание не должно превышать 120 символов")
+        return v
+
+    @field_validator("full_description")
+    @classmethod
+    def validate_full_description(cls, v):
+        if v is not None and len(v) > 512:
+            raise ValueError("Полное описание не должно превышать 512 символов")
         return v
 
 

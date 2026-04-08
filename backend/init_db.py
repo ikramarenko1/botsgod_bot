@@ -41,11 +41,18 @@ async def migrate_no_reserve_alert(conn):
         """))
 
 
+async def migrate_full_description(conn):
+    for table in ["global_config_regions", "bot_configs"]:
+        if not await column_exists(conn, table, "full_description"):
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN full_description TEXT"))
+
+
 async def init():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await migrate_auto_reply(conn)
         await migrate_no_reserve_alert(conn)
+        await migrate_full_description(conn)
 
 
 asyncio.run(init())

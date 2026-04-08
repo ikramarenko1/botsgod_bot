@@ -36,6 +36,7 @@ class GlobalConfigRegion(Base):
     region: Mapped[str] = mapped_column(String(32))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    full_description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     global_config: Mapped["GlobalConfig"] = relationship(back_populates="regions")
 

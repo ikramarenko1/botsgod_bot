@@ -18,10 +18,8 @@ async def bot_manage_handler(callback):
     parts = callback.data.split("_fk_")
     bot_id = parts[0].split("_")[1]
 
-    if len(parts) > 1:
-        back_callback = f"key_{parts[1]}"
-    else:
-        back_callback = "my_bots"
+    # Если открыт из ключа — передаём явно, иначе render_bot_menu сам определит по key_id бота
+    back_callback = f"key_{parts[1]}" if len(parts) > 1 else None
 
     await render_bot_menu(callback.message, owner_id, bot_id, edit=True, back_callback=back_callback)
     await callback.answer()

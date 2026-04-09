@@ -12,7 +12,7 @@ from controller.messages import stats_text, replacement_logs_text, export_text
 router = Router()
 
 
-@router.callback_query(lambda c: c.data.startswith("bot_") and ("_" not in c.data[4:] or "_fk_" in c.data))
+@router.callback_query(lambda c: c.data.startswith("bot_") and ("_" not in c.data[4:] or "_fk_" in c.data) and "_delete" not in c.data)
 async def bot_manage_handler(callback):
     owner_id = callback.from_user.id
     parts = callback.data.split("_fk_")
@@ -280,20 +280,25 @@ async def export_users_file(callback):
 @router.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_delete"))
 async def bot_delete_confirm(callback):
     owner_id = callback.from_user.id
-    bot_id = callback.data.split("_")[1]
+    parts = callback.data.split("_fk_")
+    bot_id = parts[0].split("_")[1]
+    key_id = parts[1].split("_")[0] if len(parts) > 1 else None
+
+    confirm_cb = f"bot_{bot_id}_fk_{key_id}_delete_confirm" if key_id else f"bot_{bot_id}_delete_confirm"
+    back_cb = f"bot_{bot_id}_fk_{key_id}" if key_id else f"bot_{bot_id}"
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="✅ Подтвердить",
-                    callback_data=f"bot_{bot_id}_delete_confirm"
+                    callback_data=confirm_cb
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="⬅️ Назад",
-                    callback_data=f"bot_{bot_id}"
+                    callback_data=back_cb
                 )
             ],
         ]
@@ -313,7 +318,9 @@ async def bot_delete_confirm(callback):
 @router.callback_query(lambda c: c.data.startswith("bot_") and c.data.endswith("_delete_confirm"))
 async def bot_delete_execute(callback):
     owner_id = callback.from_user.id
-    bot_id = callback.data.split("_")[1]
+    parts = callback.data.split("_fk_")
+    bot_id = parts[0].split("_")[1]
+    key_id = parts[1].split("_")[0] if len(parts) > 1 else None
 
     try:
         await backend_request(
@@ -326,12 +333,14 @@ async def bot_delete_execute(callback):
         await callback.answer("❌ Ошибка удаления", show_alert=True)
         return
 
+    back_cb = f"key_{key_id}" if key_id else "my_bots"
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="⬅️ Назад",
-                    callback_data="my_bots"
+                    callback_data=back_cb
                 )
             ]
         ]

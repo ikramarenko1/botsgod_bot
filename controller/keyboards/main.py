@@ -25,7 +25,7 @@ def main_menu_keyboard():
             [InlineKeyboardButton(text="👥 Моя команда", callback_data="my_team")],
             [InlineKeyboardButton(text="🧠 Статус Worker", callback_data="worker_status")],
             [InlineKeyboardButton(text="🔑 Массовая смена ключа", callback_data="mass_key")],
-            [InlineKeyboardButton(text="🔍 Проверить доп. ботов", callback_data="check_extra_bots")],
+            [InlineKeyboardButton(text="🔍 Проверить всех ботов", callback_data="check_extra_bots")],
             [InlineKeyboardButton(text="🔄 Синхронизировать вебхуки", callback_data="sync_webhooks")],
         ]
     )

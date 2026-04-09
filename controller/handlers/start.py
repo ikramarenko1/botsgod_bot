@@ -183,7 +183,7 @@ async def sync_webhooks_handler(callback):
 @router.callback_query(lambda c: c.data == "check_extra_bots")
 async def check_extra_bots_handler(callback):
     owner_id = callback.from_user.id
-    await safe_edit(callback.message, "⏳ Проверка доп. ботов...")
+    await safe_edit(callback.message, "⏳ Проверка всех ботов...")
     await callback.answer()
 
     try:
@@ -195,17 +195,17 @@ async def check_extra_bots_handler(callback):
             resp.raise_for_status()
             data = resp.json()
     except Exception:
-        await safe_edit(callback.message, "❌ Ошибка проверки доп. ботов.")
+        await safe_edit(callback.message, "❌ Ошибка проверки всех ботов.")
         return
 
     deleted = data.get("deleted", [])
     total_checked = data.get("total_checked", 0)
 
-    role_labels = {"reserve": "🟠 Резервный", "farm": "🔄 Фарм"}
+    role_labels = {"active": "🟢 Активный", "reserve": "🟠 Резервный", "farm": "🔄 Фарм"}
 
     if deleted:
         lines = [
-            f"🔍 <b>Проверка доп. ботов</b>\n",
+            f"🔍 <b>Проверка всех ботов</b>\n",
             f"📊 Проверено: <b>{total_checked}</b>",
             f"❌ Удалено: <b>{len(deleted)}</b>\n",
         ]
@@ -216,9 +216,9 @@ async def check_extra_bots_handler(callback):
         text = "\n".join(lines)
     else:
         text = (
-            f"🔍 <b>Проверка доп. ботов</b>\n\n"
+            f"🔍 <b>Проверка всех ботов</b>\n\n"
             f"📊 Проверено: <b>{total_checked}</b>\n\n"
-            f"✅ Все боты reserve и farm работают корректно."
+            f"✅ Все боты работают корректно."
         )
 
     keyboard = InlineKeyboardMarkup(

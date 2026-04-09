@@ -16,8 +16,10 @@ def bot_menu_keyboard(bot_id: str, role: str, back_callback: str = "my_bots", ha
     if back_callback.startswith("key_"):
         key_id = back_callback.split("_")[1]
         rename_cb = f"bot_{bot_id}_fk_{key_id}_rename"
+        delete_cb = f"bot_{bot_id}_fk_{key_id}_delete"
     else:
         rename_cb = f"bot_{bot_id}_rename"
+        delete_cb = f"bot_{bot_id}_delete"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -33,7 +35,7 @@ def bot_menu_keyboard(bot_id: str, role: str, back_callback: str = "my_bots", ha
             [InlineKeyboardButton(text=toggle_text, callback_data=toggle_data)],
             [InlineKeyboardButton(text="📜 Логи замены", callback_data=f"bot_{bot_id}_replacement_logs")],
             [InlineKeyboardButton(text="📦 Выгрузить пользователей", callback_data=f"bot_{bot_id}_export_users")],
-            [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=f"bot_{bot_id}_delete")],
+            [InlineKeyboardButton(text="🗑 Удалить бота", callback_data=delete_cb)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)]
         ]
     )

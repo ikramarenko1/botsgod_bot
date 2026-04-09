@@ -400,7 +400,7 @@ async def check_extra_bots(
     result = await db.execute(
         select(Bot).where(
             Bot.team_id == team_id,
-            Bot.role.in_([BotRole.reserve, BotRole.farm]),
+            Bot.role.in_([BotRole.reserve, BotRole.farm, BotRole.active]),
         )
     )
     bots = result.scalars().all()
